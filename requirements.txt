@@ -1,0 +1,13 @@
+﻿fastapi
+uvicorn
+pydantic
+requests
+diskcache
+structlog
+python-dotenv
+docxtpl
+streamlit
+pandas
+numpy
+pyyaml
+pytest

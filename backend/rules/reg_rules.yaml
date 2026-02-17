@@ -1,0 +1,5 @@
+﻿checks:
+  - id: CV_HIGH_DESIGN
+    description: "High CVintra should use replicate/scaled design"
+  - id: WASHOUT
+    description: "Washout duration should be >= 5x t1/2"

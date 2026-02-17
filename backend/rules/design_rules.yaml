@@ -1,0 +1,21 @@
+﻿rules:
+  - id: NTI
+    type: nti
+    design: "replicate with tighter BE limits"
+    message: "NTI flag implies tighter limits; replicate design recommended."
+  - id: CV_LOW
+    type: cv_range
+    max: 30
+    design: "2x2 crossover"
+    message: "Low variability (CV<=30%) -> standard 2x2 crossover."
+  - id: CV_MED
+    type: cv_range
+    min: 30
+    max: 50
+    design: "2x2 crossover (consider replicate)"
+    message: "Moderate variability (30-50%) -> 2x2, consider replicate if HVD."
+  - id: CV_HIGH
+    type: cv_range
+    min: 50
+    design: "replicate (2x4 or 3x3) with scaled BE"
+    message: "High variability (>50%) -> replicate design with scaled BE."
