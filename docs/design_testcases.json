@@ -1,0 +1,72 @@
+{
+  "cases": [
+    {
+      "name": "nti_flag_true",
+      "nti": true,
+      "cv_input": {
+        "value": 25,
+        "confirmed": true
+      },
+      "expected": {
+        "design": "replicate",
+        "rule_id": "NTI",
+        "missing": []
+      }
+    },
+    {
+      "name": "cv_low_confirmed",
+      "nti": false,
+      "cv_input": {
+        "value": 25,
+        "confirmed": true
+      },
+      "expected": {
+        "design": "2x2 crossover",
+        "rule_id": "CV_LOW",
+        "missing": []
+      }
+    },
+    {
+      "name": "cv_high_unconfirmed",
+      "nti": false,
+      "cv_input": {
+        "value": 55,
+        "confirmed": false
+      },
+      "expected": {
+        "design": "replicate",
+        "rule_id": "CV_HIGH",
+        "missing": [
+          "CVintra confirmation"
+        ]
+      }
+    },
+    {
+      "name": "cv_missing_default",
+      "nti": false,
+      "cv_input": null,
+      "expected": {
+        "design": "2x2 crossover",
+        "rule_id": "CV_MED",
+        "missing": [
+          "CVintra"
+        ]
+      }
+    },
+    {
+      "name": "nti_unknown_cv_confirmed",
+      "nti": null,
+      "cv_input": {
+        "value": 35,
+        "confirmed": true
+      },
+      "expected": {
+        "design": "2x2 crossover",
+        "rule_id": "CV_MED",
+        "missing": [
+          "NTI flag"
+        ]
+      }
+    }
+  ]
+}

@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from typing import Dict, Optional, Tuple
 
+import yaml
+
 from backend.schemas import CVInput, NumericValue, SampleSizeResponse
 from backend.services.utils import now_iso
 
@@ -34,10 +36,12 @@ def calc_sample_size(
         "timestamp": now_iso(),
     }
 
-    r_result = _try_powertost(design, cv, power, alpha)
+    pt_design, map_warnings = _map_design(design)
+    r_result = _try_powertost(pt_design, cv, power, alpha)
     if r_result:
         n_total, details_text = r_result
         details["engine"] = "PowerTOST"
+        details["pt_design"] = pt_design
         details["raw"] = details_text
         evidence = [
             {
@@ -47,13 +51,13 @@ def calc_sample_size(
                 "context": "PowerTOST via Rscript",
             }
         ]
-        return _build_response(n_total, dropout, screen_fail, evidence, details)
+        return _build_response(n_total, dropout, screen_fail, evidence, details, map_warnings)
 
     # fallback approximate formula
     n_total, formula_text = _approximate_n_total(cv, power, alpha)
     warnings = [
         "Rscript/PowerTOST not available. Used approximate formula for N."
-    ]
+    ] + map_warnings
     evidence = [
         {
             "source_type": "URL",
@@ -65,6 +69,51 @@ def calc_sample_size(
     details["engine"] = "approx"
     details["raw"] = formula_text
     return _build_response(n_total, dropout, screen_fail, evidence, details, warnings)
+
+
+def _map_design(design: str) -> Tuple[str, list]:
+    warnings: list[str] = []
+    mapping = _load_powertost_mapping()
+    if not mapping:
+        warnings.append("powertost_mapping_default")
+        mapping = _default_mapping()
+    key = (design or "").strip().lower()
+    pt_design = mapping.get(key)
+    if not pt_design:
+        warnings.append("powertost_mapping_missing")
+        pt_design = "2x2"
+    return pt_design, warnings
+
+
+def _load_powertost_mapping() -> Dict[str, str]:
+    path = "docs/POWERTOST_MAPPING.md"
+    if not os.path.exists(path):
+        return {}
+    try:
+        text = open(path, "r", encoding="utf-8").read().strip()
+    except Exception:
+        return {}
+    if not text or "TODO" in text.upper():
+        return {}
+    # Try parse YAML if present, otherwise return empty.
+    try:
+        data = yaml.safe_load(text)
+        if isinstance(data, dict) and "design_map" in data:
+            return {str(k).lower(): str(v) for k, v in (data.get("design_map") or {}).items()}
+    except Exception:
+        return {}
+    return {}
+
+
+def _default_mapping() -> Dict[str, str]:
+    return {
+        "2x2 crossover": "2x2",
+        "2x2": "2x2",
+        "replicate": "2x2",
+        "replicate design": "2x2",
+        "partial replicate": "2x2",
+        "scaled": "2x2",
+    }
 
 
 def _build_response(

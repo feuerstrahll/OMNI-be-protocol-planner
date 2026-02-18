@@ -7,6 +7,14 @@
     units: ["ng*h/mL", "ng·h/mL", "mg*h/L", "µg*h/L", "ug*h/L", "ng*hr/mL"]
     min: 0.01
     max: 10000000
+  AUC0-inf:
+    units: ["ng*h/mL", "ng·h/mL", "mg*h/L", "µg*h/L", "ug*h/L", "ng*hr/mL"]
+    min: 0.01
+    max: 10000000
+  AUC0-t:
+    units: ["ng*h/mL", "ng·h/mL", "mg*h/L", "µg*h/L", "ug*h/L", "ng*hr/mL"]
+    min: 0.01
+    max: 10000000
   AUC_inf:
     units: ["ng*h/mL", "ng·h/mL", "mg*h/L", "µg*h/L", "ug*h/L", "ng*hr/mL"]
     min: 0.01
@@ -27,3 +35,7 @@
     units: ["%"]
     min: 5
     max: 200
+  lambda_z:
+    units: ["1/h", "h^-1", "hr^-1"]
+    min: 0.001
+    max: 10

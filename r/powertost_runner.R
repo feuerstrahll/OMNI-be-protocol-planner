@@ -38,8 +38,8 @@ suppressMessages(library(PowerTOST))
 # PowerTOST expects CV as fraction (0.3 for 30%)
 cv_frac <- cv / 100
 
-# Simplified mapping: treat replicate as 2x2 for MVP
-pt_design <- "2x2"
+# Use mapped design from caller (default to 2x2)
+pt_design <- ifelse(is.null(design) || design == "", "2x2", design)
 
 # Suppress verbose output from PowerTOST
 res <- suppressWarnings({

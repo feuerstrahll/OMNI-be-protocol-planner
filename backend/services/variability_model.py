@@ -30,7 +30,7 @@ class VariabilityModel:
                 low, high = low + 5, high + 10
                 drivers.append("Moderate logP (>=3) increases variability")
 
-        if data.t_half and data.t_half.value >= 24:
+        if data.t_half is not None and data.t_half >= 24:
             low, high = low + 5, high + 10
             drivers.append("Long half-life (>=24 h) increases variability")
 

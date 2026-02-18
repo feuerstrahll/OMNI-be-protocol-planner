@@ -1,21 +1,33 @@
-﻿rules:
+defaults:
+  cv: 40
+
+rules:
   - id: NTI
-    type: nti
-    design: "replicate with tighter BE limits"
+    priority: 100
+    when:
+      nti: true
+    design: "replicate"
     message: "NTI flag implies tighter limits; replicate design recommended."
+  - id: CV_HIGH
+    priority: 80
+    when:
+      cv_min: 50
+    design: "replicate"
+    message: "High variability (>50%) -> replicate design with scaled BE."
+  - id: CV_MED
+    priority: 60
+    when:
+      cv_min: 30
+      cv_max: 50
+    design: "2x2 crossover"
+    message: "Moderate variability (30-50%) -> 2x2, consider replicate if HVD."
   - id: CV_LOW
-    type: cv_range
-    max: 30
+    priority: 40
+    when:
+      cv_max: 30
     design: "2x2 crossover"
     message: "Low variability (CV<=30%) -> standard 2x2 crossover."
-  - id: CV_MED
-    type: cv_range
-    min: 30
-    max: 50
-    design: "2x2 crossover (consider replicate)"
-    message: "Moderate variability (30-50%) -> 2x2, consider replicate if HVD."
-  - id: CV_HIGH
-    type: cv_range
-    min: 50
-    design: "replicate (2x4 or 3x3) with scaled BE"
-    message: "High variability (>50%) -> replicate design with scaled BE."
+  - id: DEFAULT
+    priority: 0
+    design: "2x2 crossover"
+    message: "Default to 2x2 crossover when no rule matches."

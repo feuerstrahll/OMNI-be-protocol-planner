@@ -1,0 +1,58 @@
+﻿{
+  "inn": "metformin",
+  "pk_values": [
+    {
+      "name": "Cmax",
+      "value": 12.3,
+      "unit": "ng/mL",
+      "evidence": [
+        {
+          "source_id": "PMID:123456",
+          "pmid_or_url": "PMID:123456",
+          "excerpt": "Cmax 12.3 ng/mL was observed after a single dose.",
+          "location": "abstract",
+          "confidence": "medium"
+        }
+      ],
+      "warnings": []
+    },
+    {
+      "name": "AUC0-t",
+      "value": 85.7,
+      "unit": "ng*h/mL",
+      "evidence": [
+        {
+          "source_id": "PMID:123456",
+          "pmid_or_url": "PMID:123456",
+          "excerpt": "AUC0-t 85.7 ng*h/mL (0-24 h) was reported.",
+          "location": "abstract",
+          "confidence": "medium"
+        }
+      ],
+      "warnings": []
+    }
+  ],
+  "ci_values": [
+    {
+      "param": "Cmax",
+      "ci_low": 0.91,
+      "ci_high": 1.08,
+      "confidence_level": 0.9,
+      "gmr": 0.99,
+      "n": 24,
+      "design_hint": "2x2_crossover; log_transformed",
+      "evidence": [
+        {
+          "source_id": "PMID:123456",
+          "pmid_or_url": "PMID:123456",
+          "excerpt": "Cmax GMR 0.99 with 90% CI 0.91-1.08 (n=24) in a 2x2 crossover; log-transformed.",
+          "location": "abstract",
+          "confidence": "medium"
+        }
+      ],
+      "warnings": []
+    }
+  ],
+  "warnings": [],
+  "missing": []
+}

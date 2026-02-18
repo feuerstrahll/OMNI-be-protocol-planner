@@ -4,7 +4,7 @@ import re
 from typing import Dict, List, Tuple
 from xml.etree import ElementTree
 
-from backend.schemas import NumericValue, SourceRecord
+from backend.schemas import SourceCandidate
 from backend.services.utils import (
     AppConfig,
     get_cache,
@@ -60,10 +60,10 @@ class PubMedClient:
             result[uid] = item
         return result
 
-    def search_sources(self, inn: str, retmax: int = 10) -> Tuple[str, List[SourceRecord], List[str]]:
+    def search_sources(self, inn: str, retmax: int = 10) -> Tuple[str, List[SourceCandidate], List[str]]:
         query = f"{inn}[Title/Abstract] AND (pharmacokinetics OR bioavailability OR Cmax OR AUC)"
         warnings: List[str] = []
-        sources: List[SourceRecord] = []
+        sources: List[SourceCandidate] = []
 
         pubmed_ids = self._esearch("pubmed", query, retmax)
         pmc_ids = self._esearch("pmc", query, retmax)
@@ -76,26 +76,17 @@ class PubMedClient:
             title = normalize_space(item.get("title", ""))
             pubdate = item.get("pubdate", "")
             year = self._extract_year(pubdate)
-            year_val = None
-            if year:
-                year_val = NumericValue(
-                    value=float(year),
-                    unit="year",
-                    evidence=[
-                        {
-                            "source_type": "URL",
-                            "source": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-                            "snippet": f"PubDate: {pubdate}",
-                            "context": "NCBI ESummary",
-                        }
-                    ],
-                )
+            type_tags = self._infer_type_tags(title)
+            species = self._infer_species(title)
+            feeding = self._infer_feeding(title)
             sources.append(
-                SourceRecord(
+                SourceCandidate(
                     pmid=str(pmid),
                     title=title,
-                    year=year_val,
-                    journal=item.get("source"),
+                    year=int(year) if year else None,
+                    type_tags=type_tags,
+                    species=species,
+                    feeding=feeding,
                     url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
                 )
             )
@@ -105,26 +96,17 @@ class PubMedClient:
             title = normalize_space(item.get("title", ""))
             pubdate = item.get("pubdate", "")
             year = self._extract_year(pubdate)
-            year_val = None
-            if year:
-                year_val = NumericValue(
-                    value=float(year),
-                    unit="year",
-                    evidence=[
-                        {
-                            "source_type": "URL",
-                            "source": f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/",
-                            "snippet": f"PubDate: {pubdate}",
-                            "context": "NCBI ESummary",
-                        }
-                    ],
-                )
+            type_tags = self._infer_type_tags(title)
+            species = self._infer_species(title)
+            feeding = self._infer_feeding(title)
             sources.append(
-                SourceRecord(
+                SourceCandidate(
                     pmid=f"PMCID:{pmcid}",
                     title=title,
-                    year=year_val,
-                    journal=item.get("source"),
+                    year=int(year) if year else None,
+                    type_tags=type_tags,
+                    species=species,
+                    feeding=feeding,
                     url=f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/",
                 )
             )
@@ -190,3 +172,33 @@ class PubMedClient:
             return None
         match = re.search(r"(19|20)\d{2}", pubdate)
         return match.group(0) if match else None
+
+    @staticmethod
+    def _infer_type_tags(title: str) -> List[str]:
+        title_l = (title or "").lower()
+        tags: List[str] = []
+        if "bioequivalence" in title_l or "bioequivalent" in title_l:
+            tags.append("BE")
+        if "pharmacokinetic" in title_l or "pharmacokinetics" in title_l:
+            tags.append("PK")
+        if "review" in title_l:
+            tags.append("review")
+        return tags
+
+    @staticmethod
+    def _infer_species(title: str) -> Optional[str]:
+        title_l = (title or "").lower()
+        if "rat" in title_l or "mouse" in title_l or "animal" in title_l:
+            return "animal"
+        if "human" in title_l or "healthy" in title_l:
+            return "human"
+        return None
+
+    @staticmethod
+    def _infer_feeding(title: str) -> Optional[str]:
+        title_l = (title or "").lower()
+        if "fasted" in title_l:
+            return "fasted"
+        if "fed" in title_l:
+            return "fed"
+        return None
