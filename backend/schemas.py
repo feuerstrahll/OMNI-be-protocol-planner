@@ -15,6 +15,7 @@ class Evidence(BaseModel):
     excerpt: Optional[str] = Field(None, description="Evidence excerpt")
     location: Optional[str] = Field(None, description="abstract/table/section if available")
     confidence: Optional[str] = Field(None, description="Optional confidence label")
+    context_tags: Optional[Dict[str, bool]] = Field(None, description="Context tags extracted from evidence snippet")
 
     # Legacy fields to keep compatibility with existing services.
     source_type: Optional[Literal["PMID", "URL"]] = None
@@ -100,7 +101,11 @@ class PKValue(BaseModel):
     normalized_value: Optional[float] = None
     normalized_unit: Optional[str] = None
     evidence: List[Evidence] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="Extraction/validation warnings (e.g., llm_extracted_requires_human_review)",
+    )
+    conflict_sources: Optional[List[str]] = None
 
     @model_validator(mode="before")
     @classmethod

@@ -138,10 +138,29 @@ def _render_evidence(evidence_list: List[Dict]) -> None:
             st.caption(f"Source: {source}")
 
 
-def _format_design(fullreport: Optional[Dict], design_resp: Optional[Dict]) -> Dict:
-    if fullreport and fullreport.get("design"):
-        return fullreport["design"]
-    return design_resp or {}
+def _format_design(fullreport: Optional[Dict], design_resp: Optional[Any]) -> Dict:
+    if fullreport and fullreport.get("design") is not None:
+        design_obj = fullreport["design"]
+        if isinstance(design_obj, dict):
+            if "design" not in design_obj and "recommendation" in design_obj:
+                return {"design": design_obj.get("recommendation"), **design_obj}
+            return design_obj
+        if isinstance(design_obj, str):
+            return {"design": design_obj}
+
+    if isinstance(design_resp, dict):
+        if "design" in design_resp:
+            return design_resp
+        if "recommendation" in design_resp:
+            return {"design": design_resp.get("recommendation"), **design_resp}
+    if isinstance(design_resp, str):
+        return {"design": design_resp}
+    return {}
+
+
+def _reset_cv_on_inn_change() -> None:
+    st.session_state["cv_confirmed"] = False
+    st.session_state["manual_cv"] = None
 
 
 if "sources" not in st.session_state:
@@ -160,6 +179,12 @@ if "reg" not in st.session_state:
     st.session_state["reg"] = None
 if "fullreport" not in st.session_state:
     st.session_state["fullreport"] = None
+if "docx_bytes" not in st.session_state:
+    st.session_state["docx_bytes"] = None
+if "docx_filename" not in st.session_state:
+    st.session_state["docx_filename"] = None
+if "docx_error" not in st.session_state:
+    st.session_state["docx_error"] = None
 
 
 st.subheader("0) Метаданные протокола")
@@ -171,7 +196,7 @@ visit_day_numbering = st.text_input("Visit/day numbering", value="continuous acr
 
 
 st.subheader("1) INN и источники")
-inn = st.text_input("INN", value="metformin", key="inn")
+inn = st.text_input("INN", value="metformin", key="inn", on_change=_reset_cv_on_inn_change)
 
 with st.expander("Поиск источников (PubMed/PMC)", expanded=False):
     if st.button("Найти источники"):
@@ -198,10 +223,12 @@ with st.expander("Поиск источников (PubMed/PMC)", expanded=False)
             ]
         )
         st.dataframe(df_sources, use_container_width=True)
+        pmids = [s["pmid"] for s in sources]
+        if "selected_sources" not in st.session_state or not st.session_state["selected_sources"]:
+            st.session_state["selected_sources"] = pmids
         st.multiselect(
             "Выберите источники",
-            options=[s["pmid"] for s in sources],
-            default=st.session_state.get("selected_sources", []),
+            options=pmids,
             key="selected_sources",
         )
 
@@ -212,22 +239,31 @@ pk_state = st.session_state.get("pk")
 cv_source, cv_value, cv_evidence, cv_info = _resolve_cv_context(fullreport, pk_state)
 ci_values = _as_list((fullreport or {}).get("ci_values") or (pk_state or {}).get("ci_values"))
 dq_level = _get((fullreport or {}).get("data_quality"), "level")
+cv_extracted_value = cv_value
 
 st.markdown("## CVintra Confirmation (Required for N_det)")
 st.warning("N_det is disabled until CVintra is confirmed.")
 st.markdown(f"**CV source:** `{cv_source}`")
 
-cv_confirmed = st.checkbox(
+cv_confirmed_checked = st.checkbox(
     "I confirm CVintra value is correct and can be used for N_det",
-    key="cv_confirmed",
+    key="cv_confirmed_checkbox",
     value=bool(st.session_state.get("cv_confirmed", False)),
 )
+cv_value = st.session_state.get("manual_cv")
+if cv_confirmed_checked and cv_value and float(cv_value) > 0:
+    st.session_state["cv_confirmed"] = True
+else:
+    st.session_state["cv_confirmed"] = False
+    if cv_confirmed_checked and not cv_value:
+        st.warning("Введите значение CV перед подтверждением.")
+cv_confirmed = bool(st.session_state.get("cv_confirmed", False))
 
-if cv_value is not None:
+if cv_extracted_value is not None:
     try:
-        cv_display = f"{float(cv_value):.1f}%"
+        cv_display = f"{float(cv_extracted_value):.1f}%"
     except (TypeError, ValueError):
-        cv_display = str(cv_value)
+        cv_display = str(cv_extracted_value)
     st.metric("CVintra (%)", value=cv_display)
 else:
     st.info("CVintra not available yet. You can enter a manual value below.")
@@ -241,7 +277,7 @@ if cv_source == "derived_from_ci":
 
 _render_evidence(cv_evidence)
 
-show_manual = cv_value is None or cv_source in ("range", "unknown") or dq_level == "red"
+show_manual = cv_extracted_value is None or cv_source in ("range", "unknown") or dq_level == "red"
 manual_cv_value = None
 if show_manual:
     st.caption("Manual CV still requires confirmation.")
@@ -252,14 +288,19 @@ if show_manual:
         for i, p in enumerate(presets):
             if preset_cols[i].button(f"{p}%"):
                 st.session_state["manual_cv"] = p
-        manual_default = st.session_state.get("manual_cv", 30)
+                st.session_state["manual_cv_input"] = p
+        if "manual_cv_input" not in st.session_state:
+            st.session_state["manual_cv_input"] = st.session_state.get("manual_cv", 30)
+        manual_default = st.session_state.get("manual_cv_input", 30)
         manual_cv_value = st.number_input(
             "Manual CVintra (%)",
             value=float(manual_default),
             min_value=1.0,
             max_value=200.0,
-            key="manual_cv",
+            key="manual_cv_input",
         )
+        if manual_cv_value and manual_cv_value > 0:
+            st.session_state["manual_cv"] = float(manual_cv_value)
 
 st.markdown("---")
 st.subheader("Run Pipeline (FullReport)")
@@ -273,8 +314,8 @@ if st.button("Run pipeline", type="primary"):
         "inn": inn,
         "retmax": 10,
         "selected_sources": st.session_state.get("selected_sources") or None,
-        "manual_cv": manual_cv_value if show_manual else None,
-        "cv_confirmed": bool(st.session_state.get("cv_confirmed", False)),
+        "manual_cv": st.session_state.get("manual_cv"),
+        "cv_confirmed": st.session_state.get("cv_confirmed", False),
         "power": float(st.session_state.get("power", 0.8)),
         "alpha": float(st.session_state.get("alpha", 0.05)),
         "dropout": float(st.session_state.get("dropout", 0.1)),
@@ -340,10 +381,23 @@ st.subheader("3) Design")
 nti_flag = st.checkbox("NTI препарат", value=False, key="nti_flag")
 design_resp = st.session_state.get("design")
 design_from_report = _format_design(st.session_state.get("fullreport"), design_resp)
+pk_payload = pk
+if not pk_payload and st.session_state.get("fullreport"):
+    fullreport_pk = (st.session_state.get("fullreport") or {}).get("pk_values")
+    if fullreport_pk is not None:
+        pk_payload = {
+            "inn": inn,
+            "pk_values": fullreport_pk or [],
+            "ci_values": (st.session_state.get("fullreport") or {}).get("ci_values") or [],
+            "warnings": [],
+            "missing": [],
+            "validation_issues": [],
+        }
 
-if st.button("Подобрать дизайн") and pk:
+design_clicked = st.button("Подобрать дизайн")
+if design_clicked and pk_payload:
     cv_payload = None
-    cv_payload_value = manual_cv_value if manual_cv_value is not None else cv_value
+    cv_payload_value = manual_cv_value if manual_cv_value is not None else cv_extracted_value
     if cv_payload_value is not None:
         cv_payload = {
             "cv": {
@@ -361,12 +415,15 @@ if st.button("Подобрать дизайн") and pk:
             "confirmed": bool(cv_confirmed),
         }
     try:
-        resp = api_post("/select_design", {"pk_json": pk, "cv_input": cv_payload, "nti": nti_flag})
-        st.session_state["design"] = resp
+        resp = api_post("/select_design", {"pk_json": pk_payload, "cv_input": cv_payload, "nti": nti_flag})
+        design_value = resp.get("recommendation") or resp.get("design") or "2x2 crossover"
+        st.session_state["design"] = design_value
         st.success("Дизайн выбран")
         design_from_report = _format_design(st.session_state.get("fullreport"), resp)
     except Exception as exc:
         st.error(f"Ошибка дизайна: {exc}")
+elif design_clicked and not pk_payload:
+    st.warning("Нет PK данных для выбора дизайна. Запустите pipeline или извлеките PK.")
 
 if design_from_report:
     st.write(design_from_report)
@@ -377,7 +434,8 @@ colA, colB, colC = st.columns(3)
 with colA:
     bcs_class = st.selectbox("BCS класс", [None, 1, 2, 3, 4], index=0)
 with colB:
-    logp = st.number_input("logP", value=0.0, min_value=0.0, max_value=10.0)
+    logp = st.number_input("logP", value=0.0, min_value=-10.0, max_value=10.0,
+                       help="Коэффициент липофильности. Может быть отрицательным.")
 with colC:
     first_pass = st.selectbox("First-pass", [None, "low", "medium", "high"], index=0)
 
@@ -430,7 +488,7 @@ with det_tab:
 
     if st.button("Compute N_det", disabled=not cv_confirmed):
         design_value = design_from_report.get("design") if design_from_report else None
-        cv_for_calc = manual_cv_value if manual_cv_value is not None else cv_value
+        cv_for_calc = manual_cv_value if manual_cv_value is not None else cv_extracted_value
         if not design_value:
             st.warning("Design not determined.")
         elif cv_for_calc is None:
@@ -542,9 +600,13 @@ with st.expander("Дополнительные параметры политик
     st.number_input("Blood volume total (mL)", value=0.0, min_value=0.0, key="blood_volume_total_ml")
     st.number_input("Blood volume PK-only (mL)", value=0.0, min_value=0.0, key="blood_volume_pk_ml")
 
-if st.button("Проверить чек-лист") and pk and design_from_report:
+if st.button("Проверить чек-лист") and pk:
+    design = st.session_state.get("design")
+    if not design:
+        st.warning("⚠️ Дизайн не определён. Сначала нажмите 'Подобрать дизайн' в секции 3.")
+        st.stop()
     cv_payload = None
-    cv_payload_value = manual_cv_value if manual_cv_value is not None else cv_value
+    cv_payload_value = manual_cv_value if manual_cv_value is not None else cv_extracted_value
     if cv_payload_value is not None:
         cv_payload = {
             "cv": {
@@ -565,7 +627,7 @@ if st.button("Проверить чек-лист") and pk and design_from_report
         resp = api_post(
             "/reg_check",
             {
-                "design": design_from_report.get("design"),
+                "design": design,
                 "pk_json": pk,
                 "schedule_days": st.session_state.get("schedule_days") or None,
                 "cv_input": cv_payload,
@@ -614,7 +676,38 @@ if st.button("Build synopsis .docx"):
         if resp.get("warnings"):
             st.error("Docx render failed. See warnings.")
             st.write(resp.get("warnings"))
+            st.session_state["docx_error"] = resp.get("warnings")
+            st.session_state["docx_bytes"] = None
+            st.session_state["docx_filename"] = None
         else:
-            st.success(f"Docx создан: {resp.get('path_to_docx')}")
+            path = resp.get("path_to_docx")
+            if not path:
+                st.error("Docx render failed: no file path returned.")
+                st.session_state["docx_error"] = ["no_docx_path"]
+                st.session_state["docx_bytes"] = None
+                st.session_state["docx_filename"] = None
+            else:
+                try:
+                    with open(path, "rb") as f:
+                        st.session_state["docx_bytes"] = f.read()
+                    st.session_state["docx_filename"] = os.path.basename(path) or "synopsis.docx"
+                    st.session_state["docx_error"] = None
+                    st.success("Docx создан. Нажмите кнопку скачивания ниже.")
+                except Exception as exc:
+                    st.error(f"Не удалось прочитать docx файл: {exc}")
+                    st.session_state["docx_error"] = [str(exc)]
+                    st.session_state["docx_bytes"] = None
+                    st.session_state["docx_filename"] = None
     except Exception as exc:
         st.error(f"Ошибка docx: {exc}")
+        st.session_state["docx_error"] = [str(exc)]
+        st.session_state["docx_bytes"] = None
+        st.session_state["docx_filename"] = None
+
+if st.session_state.get("docx_bytes"):
+    st.download_button(
+        "Download synopsis.docx",
+        data=st.session_state["docx_bytes"],
+        file_name=st.session_state.get("docx_filename") or "synopsis.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )

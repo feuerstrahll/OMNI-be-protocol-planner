@@ -2,7 +2,9 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+import os
+
+from fastapi import APIRouter, FastAPI, HTTPException
 from dotenv import load_dotenv
 
 from backend.schemas import (
@@ -35,6 +37,7 @@ from backend.services.data_quality import compute_data_quality
 from backend.services.design_engine import DesignEngine
 from backend.services.docx_builder import DocxRenderError, build_docx
 from backend.services.pk_extractor import PKExtractor
+from backend.services.pmc_fetcher import fetch_pmc_sections
 from backend.services.powertost_runner import health as powertost_health
 from backend.services.pubmed_client import PubMedClient
 from backend.services.reg_checker import RegChecker
@@ -44,6 +47,7 @@ from backend.services.sample_size_risk import compute_sample_size_risk
 from backend.services.utils import configure_logging, load_config
 from backend.services.validator import PKValidator
 from backend.services.variability_model import VariabilityModel
+from backend.services.yandex_llm import YandexLLMClient
 
 load_dotenv()
 router = APIRouter()
@@ -51,7 +55,16 @@ logger = configure_logging()
 config = load_config()
 
 pubmed_client = PubMedClient(config)
-pk_extractor = PKExtractor()
+_llm = None
+if os.getenv("YANDEX_API_KEY") and os.getenv("YANDEX_FOLDER_ID"):
+    try:
+        _llm = YandexLLMClient()
+    except Exception as exc:
+        logger.warning("yandex_llm_init_failed", error=str(exc))
+pk_extractor = PKExtractor(
+    llm_client=_llm,
+    pmc_fetcher=fetch_pmc_sections if _llm else None,
+)
 validator = PKValidator("backend/rules/validation_rules.yaml")
 design_engine = DesignEngine("backend/rules/design_rules.yaml")
 variability_model = VariabilityModel("backend/rules/variability_rules.yaml")
@@ -349,3 +362,7 @@ def _dedupe_open_questions(open_questions):
         out.append(item)
         seen.add(key)
     return out
+
+
+app = FastAPI(title="OMNI BE Protocol Planner")
+app.include_router(router)
