@@ -1,5 +1,7 @@
-Кейс-Ифарма.pdf
-.env
-C:\Users\nasty\AI case OMNI\BIOLOGISTs_files
-C:\Users\nasty\AI case OMNI\examples_synopsis
+# локальные данные и примеры
+/BIOLOGISTs_files/
+/examples_synopsis/
+*.pdf
 
+# секреты
+.env
