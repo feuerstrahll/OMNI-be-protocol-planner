@@ -1,7 +1,4 @@
-# локальные данные и примеры
 /BIOLOGISTs_files/
 /examples_synopsis/
 *.pdf
-
-# секреты
 .env
