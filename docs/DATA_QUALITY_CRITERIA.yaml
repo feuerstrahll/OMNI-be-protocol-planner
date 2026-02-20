@@ -1,0 +1,92 @@
+version: "1.0"
+description: "Data Quality Index (DQI) Criteria based on MVP specification"
+
+# ----------------------------------------------------------------------------
+# 2) DQI Components & Weights
+# DQI = round(0.25*C + 0.25*T + 0.20*P + 0.20*K + 0.10*S)
+# ----------------------------------------------------------------------------
+weights:
+  completeness:   0.25
+  traceability:   0.25
+  plausibility:   0.20
+  consistency:    0.20
+  source_quality: 0.10
+
+# ----------------------------------------------------------------------------
+# 3.1) Traffic-light levels
+# ----------------------------------------------------------------------------
+thresholds:
+  green:  80
+  yellow: 55
+
+# ----------------------------------------------------------------------------
+# 4) Hard "Red flags" (Override -> Red)
+# Any of these machine codes present in the context will trigger DQI = 0 (Red)
+# ----------------------------------------------------------------------------
+hard_red_codes:
+  - missing_primary_endpoints    # RF-1: AUC and Cmax are both missing
+  - traceability_zero            # RF-1: No traceability for any critical number
+  - unit_suspect_critical        # RF-2: Unrecognized/suspect units for AUC/Cmax
+  - unresolved_source_conflict   # RF-3: Conflict without primary selection
+  - cv_from_ci_invalid           # RF-4: CVfromCI missing fields or unconfirmed
+  - math_contradiction           # RF-5: Negative AUC/Cmax, CV < 0, CI <= 0
+
+# ----------------------------------------------------------------------------
+# 5.3 & 5.4) Penalties for Plausibility (P) and Consistency (K)
+# Mapped exactly to the Markdown (-25 points = 0.25 penalty)
+# ----------------------------------------------------------------------------
+penalties:
+  # --- Plausibility / Validity (Section 5.3) ---
+  unit_suspect:            { component: plausibility, value: 0.25 }
+  unit_missing:            { component: plausibility, value: 0.20 }
+  suspicious_conversion:   { component: plausibility, value: 0.20 }
+  ci_bad_order:            { component: plausibility, value: 0.25 } # CI_low >= CI_high
+  ci_out_of_bounds:        { component: plausibility, value: 0.10 } # <0.5 or >2.0
+  cv_too_high:             { component: plausibility, value: 0.10 } # > 100%
+  t12_suspect:             { component: plausibility, value: 0.10 } # >200h or <0.1h
+  pk_missing_auc_or_cmax:  { component: plausibility, value: 0.20 }
+  missing_design_metadata: { component: plausibility, value: 0.10 }
+  missing_fed_fasted:      { component: plausibility, value: 0.10 }
+
+  # --- Consistency (Section 5.4) ---
+  auc_cmax_diff_20:        { component: consistency, value: 0.20 } # max/min diff > 20%
+  auc_cmax_diff_35:        { component: consistency, value: 0.35 } # max/min diff > 35%
+  cv_diff_30:              { component: consistency, value: 0.20 } # CV diff > 30%
+  cv_diff_50:              { component: consistency, value: 0.35 } # CV diff > 50%
+  conflict_ci_n:           { component: consistency, value: 0.25 }
+  conflict_fed_fasted:     { component: consistency, value: 0.25 }
+  conflict_design:         { component: consistency, value: 0.25 }
+  source_conflict:         { component: consistency, value: 0.25 } # Generic fallback
+  conflicting_values:      { component: consistency, value: 0.25 } # Generic fallback
+  single_source_penalty:   { component: consistency, value: 0.20 } # Sets K=80 max if only 1 source
+
+# ----------------------------------------------------------------------------
+# 5.1) Completeness Rules
+# Start at 0, sum the additions, subtract the penalties (cap at 1.0 / 0.0)
+# ----------------------------------------------------------------------------
+completeness_rules:
+  base_score: 0.0
+  additions:
+    auc_exists:       0.25
+    cmax_exists:      0.25
+    t12_exists:       0.10
+    population_known: 0.10
+    conditions_known: 0.10
+    design_known:     0.05
+    cv_reported:      0.15
+    cv_derived:       0.12
+    cv_range:         0.08
+  penalties:
+    conditions_unknown: 0.10
+    design_unknown:     0.10
+    cv_missing:         0.15
+
+# ----------------------------------------------------------------------------
+# 5.5) Source Quality / Relevance (S)
+# Scales for the best primary source score
+# ----------------------------------------------------------------------------
+source_quality_rules:
+  human_be_matched:  0.95   # 95-100: Human, BE/PK_BE, conditions match
+  human_pk_relevant: 0.85   # 80-90: Human, PK relevant but conditions/pop diff
+  review_secondary:  0.65   # 60-75: Review/secondary analysis
+  animal_in_vitro:   0.40   # 30-50: Animal/in vitro (biological context only)

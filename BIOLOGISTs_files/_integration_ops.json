@@ -1,0 +1,80 @@
+[
+  {
+    "old_path": "backend\\rules\\design_rules.yaml",
+    "new_path": "backend\\rules\\design_rules.yaml",
+    "action": "archived+replaced",
+    "notes": "archived to backend\\rules\\_archive\\design_rules.yaml.20260220-1541"
+  },
+  {
+    "old_path": "backend\\rules\\reg_rules.yaml",
+    "new_path": "backend\\rules\\reg_rules.yaml",
+    "action": "archived+replaced",
+    "notes": "archived to backend\\rules\\_archive\\reg_rules.yaml.20260220-1541"
+  },
+  {
+    "old_path": "backend\\rules\\validation_rules.yaml",
+    "new_path": "backend\\rules\\validation_rules.yaml",
+    "action": "archived+replaced",
+    "notes": "archived to backend\\rules\\_archive\\validation_rules.yaml.20260220-1541"
+  },
+  {
+    "old_path": "backend\\rules\\variability_rules.yaml",
+    "new_path": "backend\\rules\\variability_rules.yaml",
+    "action": "archived+replaced",
+    "notes": "archived to backend\\rules\\_archive\\variability_rules.yaml.20260220-1541"
+  },
+  {
+    "old_path": "docs\\design_testcases.json",
+    "new_path": "docs\\design_testcases.json",
+    "action": "archived+replaced",
+    "notes": "archived to docs\\_archive\\design_testcases.json.20260220-1541"
+  },
+  {
+    "old_path": "docs\\CV_DISTRIBUTION.md",
+    "new_path": "docs\\CV_DISTRIBUTION.md",
+    "action": "archived+replaced",
+    "notes": "archived to docs\\_archive\\CV_DISTRIBUTION.md.20260220-1541"
+  },
+  {
+    "old_path": "docs\\PK_EXTRACTION_SPEC.md",
+    "new_path": "docs\\PK_EXTRACTION_SPEC.md",
+    "action": "archived+replaced",
+    "notes": "archived to docs\\_archive\\PK_EXTRACTION_SPEC.md.20260220-1541"
+  },
+  {
+    "old_path": "docs\\DESIGN_PARAMETER_PACK.md",
+    "new_path": "docs\\DESIGN_PARAMETER_PACK.md",
+    "action": "archived+replaced",
+    "notes": "archived to docs\\_archive\\DESIGN_PARAMETER_PACK.md.20260220-1541"
+  },
+  {
+    "old_path": "docs\\POWERTOST_MAPPING.md",
+    "new_path": "docs\\POWERTOST_MAPPING.md",
+    "action": "archived+replaced",
+    "notes": "archived to docs\\_archive\\POWERTOST_MAPPING.md.20260220-1541"
+  },
+  {
+    "old_path": "docs\\DATA_QUALITY_CRITERIA.md",
+    "new_path": "docs\\DATA_QUALITY_CRITERIA.md",
+    "action": "archived+replaced",
+    "notes": "archived to docs\\_archive\\DATA_QUALITY_CRITERIA.md.20260220-1541"
+  },
+  {
+    "old_path": "docs\\OPEN_QUESTIONS_LIBRARY.md",
+    "new_path": "docs\\OPEN_QUESTIONS_LIBRARY.md",
+    "action": "archived+replaced",
+    "notes": "archived to docs\\_archive\\OPEN_QUESTIONS_LIBRARY.md.20260220-1541"
+  },
+  {
+    "old_path": "docs\\SYNOPSIS_PHRASES.md",
+    "new_path": "docs\\SYNOPSIS_PHRASES.md",
+    "action": "archived+replaced",
+    "notes": "archived to docs\\_archive\\SYNOPSIS_PHRASES.md.20260220-1541"
+  },
+  {
+    "old_path": "docs\\golden_set.csv",
+    "new_path": "docs\\golden_set.csv",
+    "action": "archived+replaced",
+    "notes": "archived to docs\\_archive\\golden_set.csv.20260220-1541; normalized header"
+  }
+]

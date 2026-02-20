@@ -54,6 +54,29 @@ def compute_data_quality(
     consistency = _compute_consistency(eval_pk, reasons)
     source_quality = _compute_source_quality(sources, reasons)
 
+    # --- warning-based penalties ---
+    warning_codes = _collect_warnings_for_dqi(pk_values, ci_values, validation_issues)
+    penalties_cfg = criteria.get("penalties") or {}
+    components = {
+        "completeness": completeness,
+        "traceability": traceability,
+        "plausibility": plausibility,
+        "consistency": consistency,
+        "source_quality": source_quality,
+    }
+    for code, pen in penalties_cfg.items():
+        if code in warning_codes:
+            comp = pen.get("component")
+            val = float(pen.get("value", 0))
+            if comp in components:
+                components[comp] = max(0.0, components[comp] - val)
+                reasons.append(f"Penalty on {comp}: warning '{code}'.")
+    completeness = components["completeness"]
+    traceability = components["traceability"]
+    plausibility = components["plausibility"]
+    consistency = components["consistency"]
+    source_quality = components["source_quality"]
+
     weights = criteria["weights"]
     score = _weighted_score(
         {
@@ -70,10 +93,27 @@ def compute_data_quality(
     if criteria["todo"]:
         reasons.append("TODO: Data quality criteria not defined; using defaults.")
 
+    hard_red = _missing_primary_endpoints(eval_pk)
+    hard_red_codes = set(criteria.get("hard_red_codes") or [])
+    if (
+        not hard_red
+        and "traceability_zero" in hard_red_codes
+        and traceability == 0.0
+    ):
+        hard_red = True
+        reasons.insert(0, "Hard Red Flag: No evidence for any numeric value (traceability=0).")
+    if hard_red:
+        reasons.insert(0, "Hard Red Flag: Missing primary PK endpoints (AUC and Cmax).")
+        score = 0
+        level = "red"
+
     cv_source = cv_info.cv_source or cv_info.source or "unknown"
     is_range = cv_source in ("range", "variability_range")
     allow_n_det = level in ("green", "yellow") and cv_info.confirmed_by_user and not is_range
     prefer_n_risk = level == "red" or is_range or not cv_info.confirmed_by_user
+    if hard_red:
+        allow_n_det = False
+        prefer_n_risk = True
 
     return DataQuality(
         score=score,
@@ -227,6 +267,20 @@ def _compute_source_quality(sources: List[SourceCandidate], reasons: List[str]) 
     return round(species_score * tag_score, 3)
 
 
+def _missing_primary_endpoints(pk_values: List[PKValue]) -> bool:
+    has_cmax = False
+    has_auc = False
+    for pk in pk_values:
+        if pk.value is None:
+            continue
+        name = (pk.name or "").upper()
+        if name == "CMAX":
+            has_cmax = True
+        if name.startswith("AUC"):
+            has_auc = True
+    return not has_cmax and not has_auc
+
+
 def _load_required_pk(reg_rules_path: str) -> List[str]:
     try:
         with open(reg_rules_path, "r", encoding="utf-8") as f:
@@ -237,16 +291,21 @@ def _load_required_pk(reg_rules_path: str) -> List[str]:
 
 
 def _load_criteria(criteria_path: str) -> Dict[str, object]:
-    if not os.path.exists(criteria_path):
-        return _default_criteria(todo=True)
-    try:
-        with open(criteria_path, "r", encoding="utf-8") as f:
-            text = f.read().strip()
-        if not text or "TODO" in text.upper():
-            return _default_criteria(todo=True)
-    except Exception:
-        return _default_criteria(todo=True)
-    return _default_criteria(todo=False)
+    fixed_yaml = os.path.join("docs", "DATA_QUALITY_CRITERIA.yaml")
+    paths = [fixed_yaml, criteria_path]
+    for path in paths:
+        if os.path.exists(path) and path.endswith(".yaml"):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                if data.get("weights") and data.get("thresholds"):
+                    data.setdefault("todo", False)
+                    data.setdefault("penalties", {})
+                    data.setdefault("hard_red_codes", [])
+                    return data
+            except Exception:
+                pass
+    return _default_criteria(todo=True)
 
 
 def _default_criteria(todo: bool) -> Dict[str, object]:
@@ -295,3 +354,39 @@ def _dedupe_reasons(reasons: List[str], max_items: int = 5) -> List[str]:
         if len(out) >= max_items:
             break
     return out
+
+
+def _collect_warnings_for_dqi(
+    pk_values: List[PKValue],
+    ci_values: List[CIValue],
+    validation_issues: List[ValidationIssue],
+) -> set:
+    codes: set = set()
+    for pk in pk_values:
+        for w in (pk.warnings or []):
+            if w == "unit_not_allowed":
+                codes.add("unit_suspect")
+            if w == "unit_normalization_failed":
+                codes.add("suspicious_conversion")
+            if "conflict_detected" in w:
+                codes.add("conflicting_values")
+    for issue in validation_issues:
+        if "conflict" in issue.message.lower():
+            codes.add("conflicting_values")
+    numeric_items = [pk for pk in pk_values if pk.value is not None] + list(ci_values)
+    if numeric_items:
+        if not any(getattr(i, "evidence", None) for i in numeric_items):
+            codes.add("missing_evidence")
+        if not any(
+            any(
+                getattr(ev, "pmid_or_url", None)
+                or getattr(ev, "pmid", None)
+                or getattr(ev, "url", None)
+                or getattr(ev, "source_id", None)
+                for ev in (getattr(i, "evidence", None) or [])
+                if ev is not None
+            )
+            for i in numeric_items
+        ):
+            codes.add("missing_source")
+    return codes

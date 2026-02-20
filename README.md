@@ -29,6 +29,11 @@ streamlit run frontend/app.py
 - `NCBI_API_KEY` (опционально)
 - `NCBI_EMAIL` (желательно)
 - `NCBI_TOOL`
+- `LLM_PROVIDER` (опционально, `yandex` или `openai_compatible`)
+- `LLM_BASE_URL` (для `openai_compatible`, или опционально для `yandex`)
+- `LLM_API_KEY` (ключ LLM провайдера)
+- `LLM_MODEL` (например, `yandexgpt-pro` или модель OpenAI-совместимого API)
+- `LLM_FOLDER_ID` или `YANDEX_FOLDER_ID` (только для `LLM_PROVIDER=yandex`)
 
 ## Пример INN
 
@@ -67,6 +72,7 @@ streamlit run frontend/app.py
 ## Ограничения MVP
 
 - Извлечение PK происходит в основном из абстрактов (регулярные выражения).
+- При наличии LLM-конфигурации используется гибридное извлечение (regex + LLM).
 - Все числовые значения должны иметь источник и evidence (PMID/URL + контекст).
 - Нет hard-fail при отсутствии данных: только предупреждения и Open Questions.
 - CVintra всегда требует ручного подтверждения, даже если получен из CI.
@@ -75,3 +81,16 @@ streamlit run frontend/app.py
 
 - `output/FullReport.json` — единая схема отчета по расчетам и проверкам.
 - `output/synopsis.docx` — синопсис протокола (docxtpl).
+
+## CRO-структура синопсиса
+
+Обязательные заголовки (CRO Must-Have) задаются в `backend/services/synopsis_requirements.py`
+(`REQUIRED_HEADINGS`). При генерации синопсиса отсутствующие разделы добавляются автоматически
+с безопасными плейсхолдерами.
+
+Редактирование текста и формулировок:
+- шаблон docx: `templates/synopsis_template.docx`
+- соответствие полей: `backend/services/docx_builder.py` (контекст Jinja2)
+
+В синопсисе выводится блок **Data Quality summary** (DQI score/level + top‑3 причин)
+и раздел **Open Questions** (регуляторные/валидационные вопросы).

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 from typing import Dict, List, Tuple
@@ -61,7 +61,14 @@ class PubMedClient:
         return result
 
     def search_sources(self, inn: str, retmax: int = 10) -> Tuple[str, List[SourceCandidate], List[str]]:
-        query = f"{inn}[Title/Abstract] AND (pharmacokinetics OR bioavailability OR Cmax OR AUC)"
+        query = (
+            f"{inn}[Title/Abstract] AND "
+            f"(bioequivalence[Title/Abstract] OR "
+            f"\"healthy volunteers\"[Title/Abstract] OR "
+            f"\"healthy subjects\"[Title/Abstract] OR "
+            f"\"crossover\"[Title/Abstract]) AND "
+            f"(pharmacokinetics OR Cmax OR AUC)"
+        )
         warnings: List[str] = []
         sources: List[SourceCandidate] = []
 

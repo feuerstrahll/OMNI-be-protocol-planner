@@ -70,65 +70,86 @@ class DesignEngine:
         cv_for_design, cv_missing, cv_notes = self._resolve_cv_for_design(pk_json, cv_input)
         required_inputs_missing.extend(cv_missing)
         warnings.extend(cv_notes)
+        used_default = False
         if cv_for_design is None:
+            used_default = True
             cv_for_design = self._default_cv
             warnings.append(f"Using default CV={self._default_cv}% for design suggestion.")
 
-        t_half = self._pk_value(pk_json, "t1/2")
+        t_half = self._extract_t_half(pk_json)
         if t_half is None:
             required_inputs_missing.append("t1/2")
 
         if nti is None:
             required_inputs_missing.append("NTI flag")
 
-        drivers = self.rules.get("drivers") or {}
         classification = self.rules.get("classification_rules") or {}
 
-        cv_threshold = self._extract_threshold(classification.get("HVD", {}).get("condition")) or 30.0
-        t_half_threshold = self._extract_threshold(classification.get("Long_t_half", {}).get("condition")) or 72.0
-
-        matched_driver = None
-        for key in drivers.keys():
-            if key == "high_intra_subject_variability" and cv_for_design is not None:
-                if float(cv_for_design) >= cv_threshold:
-                    matched_driver = key
-                    break
-            if key == "narrow_therapeutic_index" and nti is True:
-                matched_driver = key
-                break
-            if key == "long_half_life" and t_half is not None:
-                if float(t_half) >= t_half_threshold:
-                    matched_driver = key
-                    break
-            if key in ("carryover_risk", "multiple_formulations_or_conditions", "ethical_steady_state"):
-                required_inputs_missing.append(key.replace("_", " "))
-
         reasoning: List[DesignReason] = []
-        if matched_driver:
-            driver = drivers.get(matched_driver, {})
-            design = str(driver.get("recommended_design") or self._baseline_design)
-            message = str(driver.get("reason") or driver.get("title") or "")
-            reasoning.append(DesignReason(rule_id=matched_driver, message=message or "Rule-based design selection."))
+
+        # REG-006b override: very long half-life forces parallel design
+        if t_half is not None and float(t_half) >= 150:
+            message = "T1/2 >= 150h. Parallel design strongly recommended."
+            reasoning.append(DesignReason(rule_id="REG-006b", message=message))
             return DesignResponse(
-                design=design,
+                design="parallel",
                 reasoning=reasoning,
-                reasoning_rule_id=matched_driver,
-                reasoning_text=message or "Rule-based design selection.",
+                reasoning_rule_id="REG-006b",
+                reasoning_text=message,
                 required_inputs_missing=required_inputs_missing,
                 warnings=warnings,
             )
 
+        rsabe_cfg = classification.get("RSABE", {}) if isinstance(classification, dict) else {}
+        hvd_cfg = classification.get("HVD", {}) if isinstance(classification, dict) else {}
+
+        rsabe_threshold = self._extract_threshold(rsabe_cfg.get("condition")) or 0.50
+        hvd_threshold = self._extract_threshold(hvd_cfg.get("condition")) or 30.0
+
+        if not used_default and cv_for_design is not None:
+            if self._cv_meets_threshold(cv_for_design, rsabe_threshold):
+                design = str(rsabe_cfg.get("design") or "4-way_replicate")
+                message = str(
+                    rsabe_cfg.get("note") or "Reference-Scaled ABE required (EAEU Decision 85)."
+                )
+                reasoning.append(DesignReason(rule_id="RSABE", message=message))
+                return DesignResponse(
+                    design=design,
+                    reasoning=reasoning,
+                    reasoning_rule_id="RSABE",
+                    reasoning_text=message,
+                    required_inputs_missing=required_inputs_missing,
+                    warnings=warnings,
+                )
+
+            if self._cv_meets_threshold(cv_for_design, hvd_threshold):
+                design = str(hvd_cfg.get("design") or "replicate")
+                message = str(
+                    hvd_cfg.get("note")
+                    or "Highly variable drug (CVintra >= 30%): replicate design recommended."
+                )
+                reasoning.append(DesignReason(rule_id="HVD", message=message))
+                return DesignResponse(
+                    design=design,
+                    reasoning=reasoning,
+                    reasoning_rule_id="HVD",
+                    reasoning_text=message,
+                    required_inputs_missing=required_inputs_missing,
+                    warnings=warnings,
+                )
+
+        baseline_design = self._normalize_baseline(self._baseline_design)
         reasoning.append(
             DesignReason(
                 rule_id="baseline_design",
-                message=f"Default baseline design: {self._baseline_design}.",
+                message=f"Default baseline design: {baseline_design}.",
             )
         )
         return DesignResponse(
-            design=self._baseline_design,
+            design=baseline_design,
             reasoning=reasoning,
             reasoning_rule_id="baseline_design",
-            reasoning_text=f"Default baseline design: {self._baseline_design}.",
+            reasoning_text=f"Default baseline design: {baseline_design}.",
             required_inputs_missing=required_inputs_missing,
             warnings=warnings,
         )
@@ -148,6 +169,35 @@ class DesignEngine:
         return None
 
     @staticmethod
+    def _extract_t_half(pk_json: PKExtractionResponse) -> Optional[float]:
+        # Legacy flat PK values
+        flat = DesignEngine._pk_value(pk_json, "t1/2")
+        if flat is not None:
+            return flat
+        flat = DesignEngine._pk_value(pk_json, "t_half")
+        if flat is not None:
+            return flat
+
+        # Hierarchical study_arms: look for t_half_mean
+        arms = getattr(pk_json, "study_arms", None)
+        if not arms:
+            return None
+        values: List[float] = []
+        for arm in arms:
+            val = None
+            if isinstance(arm, dict):
+                val = arm.get("t_half_mean")
+            else:
+                val = getattr(arm, "t_half_mean", None)
+            if val is None:
+                continue
+            try:
+                values.append(float(val))
+            except Exception:
+                continue
+        return max(values) if values else None
+
+    @staticmethod
     def _extract_threshold(condition: Optional[str]) -> Optional[float]:
         if not condition:
             return None
@@ -160,6 +210,19 @@ class DesignEngine:
             return float(match.group(1))
         except Exception:
             return None
+
+    @staticmethod
+    def _cv_meets_threshold(cv_value: float, threshold: float) -> bool:
+        if threshold <= 1.0:
+            return (cv_value / 100.0) >= threshold
+        return cv_value >= threshold
+
+    @staticmethod
+    def _normalize_baseline(baseline: str) -> str:
+        text = (baseline or "").strip()
+        if "2x2" in text and "crossover" in text and "_" not in text:
+            return "2x2_crossover"
+        return text or "2x2_crossover"
 
     @staticmethod
     def _normalize_rules(raw_rules: List[dict]) -> List[dict]:

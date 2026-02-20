@@ -1,0 +1,33 @@
+baseline_CV_range: [20, 30]
+
+drivers:
+
+  BCS_class_II_or_IV:
+    add_range: [5, 10]
+    mechanism: "Low solubility increases absorption variability"
+
+  strong_first_pass_metabolism:
+    add_range: [5, 10]
+    mechanism: "High hepatic extraction variability"
+
+  CYP_polymorphic_metabolism:
+    add_range: [5, 10]
+    mechanism: "Genetic metabolic variability"
+
+  food_effect_present:
+    add_range: [3, 8]
+    mechanism: "Food-dependent absorption"
+
+  modified_release:
+    add_range: [5, 10]
+    mechanism: "Complex release kinetics"
+
+classification_rules:
+  highly_variable_drug:
+    condition: "Observed_CV > 30"
+    tag: "HVD"
+
+confidence_levels:
+  high: 0.8
+  medium: 0.6
+  low: 0.4

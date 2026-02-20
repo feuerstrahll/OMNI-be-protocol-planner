@@ -7,7 +7,18 @@
     "expected": "Recommend 2×2 crossover design (standard case)",
     "actual": "",
     "status": "open",
-    "priority": "medium"
+    "priority": "medium",
+    "inputs": {
+      "cv": 20.0,
+      "t12": 8.0,
+      "nti": false
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Recommend 2×2 crossover design (standard case)"
   },
   {
     "id": 2,
@@ -17,7 +28,18 @@
     "expected": "Recommend full replicate design (e.g. 2×2×4) due to CV>30%",
     "actual": "",
     "status": "open",
-    "priority": "high"
+    "priority": "high",
+    "inputs": {
+      "cv": 35.0,
+      "t12": 6.0,
+      "nti": false
+    },
+    "expected_outputs": {
+      "recommended_design": "replicate",
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Recommend full replicate design (e.g. 2×2×4) due to CV>30%"
   },
   {
     "id": 3,
@@ -27,7 +49,18 @@
     "expected": "Recommend replicate design (2×2×4) for NTI scaling",
     "actual": "",
     "status": "open",
-    "priority": "high"
+    "priority": "high",
+    "inputs": {
+      "cv": 15.0,
+      "t12": 12.0,
+      "nti": true
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Recommend replicate design (2×2×4) for NTI scaling"
   },
   {
     "id": 4,
@@ -37,7 +70,18 @@
     "expected": "Recommend parallel design (or 2×2 crossover with extended washout) due to long t½",
     "actual": "",
     "status": "open",
-    "priority": "high"
+    "priority": "high",
+    "inputs": {
+      "cv": 20.0,
+      "t12": 72.0,
+      "nti": false
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Recommend parallel design (or 2×2 crossover with extended washout) due to long t½ Parallel override only implemented for t1/2 >= 150h."
   },
   {
     "id": 5,
@@ -47,7 +91,18 @@
     "expected": "Recommend parallel design to avoid carryover",
     "actual": "",
     "status": "open",
-    "priority": "high"
+    "priority": "high",
+    "inputs": {
+      "cv": 25.0,
+      "t12": 30.0,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Recommend parallel design to avoid carryover Parallel override only implemented for t1/2 >= 150h."
   },
   {
     "id": 6,
@@ -57,7 +112,18 @@
     "expected": "Recommend parallel design (e.g. steady-state parallel trial):contentReference[oaicite:6]{index=6}",
     "actual": "",
     "status": "open",
-    "priority": "medium"
+    "priority": "medium",
+    "inputs": {
+      "cv": null,
+      "t12": null,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Recommend parallel design (e.g. steady-state parallel trial):contentReference[oaicite:6]{index=6} Scenario not modeled; engine falls back to baseline."
   },
   {
     "id": 7,
@@ -67,7 +133,18 @@
     "expected": "Increase design robustness (likely 2×2 crossover but monitor variability) due to complex kinetics",
     "actual": "",
     "status": "open",
-    "priority": "medium"
+    "priority": "medium",
+    "inputs": {
+      "cv": 25.0,
+      "t12": 24.0,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Increase design robustness (likely 2×2 crossover but monitor variability) due to complex kinetics"
   },
   {
     "id": 8,
@@ -77,7 +154,18 @@
     "expected": "Consider parallel design to mitigate dropouts (avoids losing paired data)",
     "actual": "",
     "status": "open",
-    "priority": "low"
+    "priority": "low",
+    "inputs": {
+      "cv": 20.0,
+      "t12": null,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Consider parallel design to mitigate dropouts (avoids losing paired data)"
   },
   {
     "id": 9,
@@ -87,7 +175,18 @@
     "expected": "Recommend parallel or nested design due to more than two treatments",
     "actual": "",
     "status": "open",
-    "priority": "medium"
+    "priority": "medium",
+    "inputs": {
+      "cv": null,
+      "t12": null,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Recommend parallel or nested design due to more than two treatments Multiple formulations/arms not modeled; engine falls back to baseline."
   },
   {
     "id": 10,
@@ -97,7 +196,18 @@
     "expected": "Recommend separate fed and fasting studies (2×2 each) or replicate if variability high",
     "actual": "",
     "status": "open",
-    "priority": "medium"
+    "priority": "medium",
+    "inputs": {
+      "cv": 20.0,
+      "t12": null,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Recommend separate fed and fasting studies (2×2 each) or replicate if variability high Food-effect driven design not modeled; engine falls back to baseline."
   },
   {
     "id": 11,
@@ -107,7 +217,18 @@
     "expected": "Recommend replicate crossover with extended washout, or parallel if washout impractical:contentReference[oaicite:7]{index=7}:contentReference[oaicite:8]{index=8}",
     "actual": "",
     "status": "open",
-    "priority": "high"
+    "priority": "high",
+    "inputs": {
+      "cv": 40.0,
+      "t12": 48.0,
+      "nti": false
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Recommend replicate crossover with extended washout, or parallel if washout impractical:contentReference[oaicite:7]{index=7}:contentReference[oaicite:8]{index=8} Parallel override only implemented for t1/2 >= 150h."
   },
   {
     "id": 12,
@@ -117,7 +238,18 @@
     "expected": "Standard 2×2 crossover (CV below 30% threshold)",
     "actual": "",
     "status": "open",
-    "priority": "low"
+    "priority": "low",
+    "inputs": {
+      "cv": 28.0,
+      "t12": 10.0,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Standard 2×2 crossover (CV below 30% threshold)"
   },
   {
     "id": 13,
@@ -127,7 +259,18 @@
     "expected": "Replicate design (CV>30%)",
     "actual": "",
     "status": "open",
-    "priority": "medium"
+    "priority": "medium",
+    "inputs": {
+      "cv": 32.0,
+      "t12": 5.0,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": "replicate",
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Replicate design (CV>30%)"
   },
   {
     "id": 14,
@@ -137,7 +280,18 @@
     "expected": "Full replicate recommended instead of partial due to bias in 3-period design:contentReference[oaicite:9]{index=9}",
     "actual": "",
     "status": "open",
-    "priority": "low"
+    "priority": "low",
+    "inputs": {
+      "cv": 35.0,
+      "t12": null,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": "replicate",
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Full replicate recommended instead of partial due to bias in 3-period design:contentReference[oaicite:9]{index=9}"
   },
   {
     "id": 15,
@@ -147,6 +301,128 @@
     "expected": "Prefer simpler 2×2×4 design unless specific reason for more periods",
     "actual": "",
     "status": "open",
-    "priority": "low"
+    "priority": "low",
+    "inputs": {
+      "cv": 20.0,
+      "t12": null,
+      "nti": null
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Prefer simpler 2×2×4 design unless specific reason for more periods"
+  },
+  {
+    "id": "syn-1",
+    "name": "Synthetic: low variability CV=22",
+    "inputs": {
+      "cv": 22.0,
+      "t12": 8.0,
+      "nti": false
+    },
+    "expected_outputs": {
+      "recommended_design": "2x2_crossover",
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Low variability should use 2x2 crossover."
+  },
+  {
+    "id": "syn-2",
+    "name": "Synthetic: high variability CV=40",
+    "inputs": {
+      "cv": 40.0,
+      "t12": 8.0,
+      "nti": false
+    },
+    "expected_outputs": {
+      "recommended_design": "replicate",
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "HVD should trigger replicate design."
+  },
+  {
+    "id": "syn-3",
+    "name": "Synthetic: very high variability CV=55 (RSABE)",
+    "inputs": {
+      "cv": 55.0,
+      "t12": 8.0,
+      "nti": false
+    },
+    "expected_outputs": {
+      "recommended_design": "4-way_replicate",
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "CV >= 50% should trigger RSABE 4-way replicate."
+  },
+  {
+    "id": "syn-4",
+    "name": "Synthetic: very long half-life t12=180h",
+    "inputs": {
+      "cv": 25.0,
+      "t12": 180.0,
+      "nti": false
+    },
+    "expected_outputs": {
+      "recommended_design": "parallel",
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "t1/2 >= 150h overrides CV and forces parallel design."
+  },
+  {
+    "id": "syn-5",
+    "name": "Synthetic: CV missing, CI present (default CV path)",
+    "inputs": {
+      "cv": null,
+      "t12": 10.0,
+      "nti": false,
+      "ci": {
+        "low": 0.9,
+        "high": 1.1,
+        "n": 24
+      }
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "CV missing: engine currently falls back to baseline; no HVD/RSABE without confirmed CV."
+  },
+  {
+    "id": "syn-6",
+    "name": "Synthetic: borderline variability CV=28",
+    "inputs": {
+      "cv": 28.0,
+      "t12": 10.0,
+      "nti": false
+    },
+    "expected_outputs": {
+      "recommended_design": "2x2_crossover",
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "CV below 30% threshold."
+  },
+  {
+    "id": "syn-7",
+    "name": "Synthetic: carryover risk mentioned (not modeled)",
+    "inputs": {
+      "cv": 25.0,
+      "t12": 20.0,
+      "nti": false,
+      "carryover_risk": true
+    },
+    "expected_outputs": {
+      "recommended_design": null,
+      "n_det": [],
+      "dqi_level": null
+    },
+    "notes": "Carryover risk not explicitly modeled; engine may fallback to baseline."
   }
 ]

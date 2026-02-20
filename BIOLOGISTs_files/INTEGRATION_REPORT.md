@@ -72,6 +72,18 @@ Repo: `feuerstrahll/OMNI-be-protocol-planner`
    - Reg-check emits CLARIFY `FEEDING_CONDITION_CLARIFY`.
    - Ambiguous PK/CI are excluded from calculations but preserved in FullReport.
 
+5) **Missing AUC/Cmax endpoints**
+   - DQI hard red flag triggers: score=0, level=red, N_det blocked.
+   - Pipeline still exports JSON/docx with warnings and Open Questions.
+
+6) **study_condition = unknown**
+   - Reg-check emits CLARIFY `REG-008` (OQ-160) for unknown fed/fasted state.
+
+7) **design_testcases.json restored and expanded**
+   - Restored Sergey scenario-based cases and appended synthetic edge cases.
+   - Tests now validate intended logic without mirroring engine thresholds.
+   - `golden_set.json` moved to `docs/_archive/golden_set.json.20260220-1843` to avoid mixing with design testcases.
+
 5) **Conflicting sources**
    - Validator adds `conflict_detected` warnings.
    - Reg-check REG-007 fires (conflicting values), DQI consistency is penalized.

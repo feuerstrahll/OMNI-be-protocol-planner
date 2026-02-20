@@ -187,12 +187,106 @@ if "docx_error" not in st.session_state:
     st.session_state["docx_error"] = None
 
 
+with st.expander("📋 Порядок работы с системой", expanded=False):
+    st.markdown(
+        """
+**Шаг 1 — Заполните метаданные** (секция 0): форма, доза, режим приёма, пол, возраст
+
+**Шаг 2 — Введите INN** (секция 1): название препарата. Опционально: найдите источники в PubMed и оставьте только релевантные (BE/PK, человек, здоровые добровольцы)
+
+**Шаг 3 — Введите CVintra**: введите значение вручную (кнопки 20/30/40/50% или число) и **обязательно поставьте галочку "I confirm"** — без неё N_det не рассчитается
+
+**Шаг 4 — Настройте параметры** (секция 5): power, alpha, dropout, screen-fail
+
+**Шаг 5 — Регуляторный ввод** (секция 7): washout, длительности, объём крови
+
+**Шаг 6 — Нажмите "Run pipeline"** — система сделает всё сразу: поиск + PK + дизайн + N + регуляторные проверки
+
+**Шаг 7 — Секции 3–6**: просмотр результатов (дизайн, N_det, DQI, Open Questions)
+
+**Шаг 8 — Секция 8**: скачать .docx / .json / .md
+
+> Секции 3–6 после Run pipeline заполняются автоматически. Кнопки "Подобрать дизайн" и "Compute N_det" — для ручного пошагового режима.
+        """
+    )
+
 st.subheader("0) Метаданные протокола")
 protocol_id = st.text_input("Protocol ID (optional)", value="", key="protocol_id")
 protocol_status = "Draft" if not protocol_id.strip() else "Final"
+
+col_meta1, col_meta2 = st.columns(2)
+with col_meta1:
+    dosage_form = st.text_input(
+        "Лекарственная форма",
+        value="",
+        key="dosage_form",
+        help="Например: таблетки, капсулы, раствор для инъекций",
+    )
+with col_meta2:
+    dose = st.text_input(
+        "Дозировка",
+        value="",
+        key="dose",
+        help="Например: 500 mg, 10 mg/mL",
+    )
+
 replacement_subjects_label = st.selectbox("Replacement subjects / alternates", ["No", "Yes"], index=0)
 replacement_subjects = replacement_subjects_label == "Yes"
 visit_day_numbering = st.text_input("Visit/day numbering", value="continuous across periods")
+
+col_cond1, col_cond2 = st.columns(2)
+with col_cond1:
+    protocol_condition_label = st.selectbox(
+        "Режим приёма (fed/fasted/both)",
+        ["", "fasted", "fed", "both"],
+        index=0,
+    )
+    protocol_condition = protocol_condition_label or None
+with col_cond2:
+    study_phase_label = st.selectbox(
+        "Тип исследования",
+        ["auto", "single", "two-phase"],
+        index=0,
+        help="Однофазное / двухфазное / автовыбор моделью",
+    )
+    study_phase = study_phase_label if study_phase_label != "auto" else None
+
+with st.expander("Предпочтительный дизайн и RSABE", expanded=False):
+    preferred_design = st.text_input(
+        "Предпочтительный дизайн (оставьте пустым для автовыбора)",
+        value="",
+        key="preferred_design",
+        help="Например: 2x2_crossover, replicate, 4-way_replicate, parallel",
+    )
+    rsabe_requested = st.checkbox(
+        "Необходимость применения RSABE",
+        value=False,
+        key="rsabe_requested",
+        help="Если отмечено, система принудительно выберет replicate дизайн для RSABE",
+    )
+
+with st.expander("Дополнительные требования заказчика", expanded=False):
+    col_cro1, col_cro2 = st.columns(2)
+    with col_cro1:
+        gender_requirement = st.selectbox(
+            "Гендерный состав",
+            ["", "мужчины и женщины", "только мужчины", "только женщины"],
+            index=0,
+            key="gender_requirement",
+        )
+    with col_cro2:
+        age_range = st.text_input(
+            "Возрастной диапазон",
+            value="",
+            key="age_range",
+            help="Например: 18-55, 18-65",
+        )
+    additional_constraints = st.text_area(
+        "Иные ограничения заказчика",
+        value="",
+        key="additional_constraints",
+        help="Любые дополнительные требования к дизайну исследования",
+    )
 
 
 st.subheader("1) INN и источники")
@@ -224,13 +318,20 @@ with st.expander("Поиск источников (PubMed/PMC)", expanded=False)
         )
         st.dataframe(df_sources, use_container_width=True)
         pmids = [s["pmid"] for s in sources]
-        if "selected_sources" not in st.session_state or not st.session_state["selected_sources"]:
+        if "selected_sources" not in st.session_state:
             st.session_state["selected_sources"] = pmids
-        st.multiselect(
-            "Выберите источники",
-            options=pmids,
-            key="selected_sources",
-        )
+        col_src1, col_src2 = st.columns([3, 1])
+        with col_src2:
+            if st.button("Снять все", key="deselect_all_sources"):
+                st.session_state["selected_sources"] = []
+            if st.button("Выбрать все", key="select_all_sources"):
+                st.session_state["selected_sources"] = pmids
+        with col_src1:
+            st.multiselect(
+                "Выберите источники",
+                options=pmids,
+                key="selected_sources",
+            )
 
 
 fullreport = st.session_state.get("fullreport")
@@ -303,19 +404,32 @@ if show_manual:
             st.session_state["manual_cv"] = float(manual_cv_value)
 
 st.markdown("---")
-st.subheader("Run Pipeline (FullReport)")
+st.subheader("▶ Run Pipeline (FullReport)")
+st.info(
+    "**Порядок действий перед запуском:**\n"
+    "1. Заполните секцию 0 (метаданные, форма, доза, режим, пол, возраст)\n"
+    "2. Введите INN в секции 1 и при необходимости выберите источники\n"
+    "3. Введите CVintra выше и **поставьте галочку подтверждения**\n"
+    "4. Выставьте power/alpha/dropout в секции 5\n"
+    "5. Укажите washout в секции 7\n\n"
+    "Затем нажмите кнопку ниже — система запустит весь pipeline одним запросом."
+)
 
-if st.button("Run pipeline", type="primary"):
+if st.button("▶ Run pipeline", type="primary"):
     seed_val = st.session_state.get("risk_seed")
     if seed_val == 0:
         seed_val = None
     risk_dist = st.session_state.get("risk_distribution") or None
     payload = {
         "inn": inn,
+        "dosage_form": dosage_form.strip() or None,
+        "dose": dose.strip() or None,
         "retmax": 10,
         "selected_sources": st.session_state.get("selected_sources") or None,
         "manual_cv": st.session_state.get("manual_cv"),
         "cv_confirmed": st.session_state.get("cv_confirmed", False),
+        "rsabe_requested": rsabe_requested or None,
+        "preferred_design": preferred_design.strip() or None,
         "power": float(st.session_state.get("power", 0.8)),
         "alpha": float(st.session_state.get("alpha", 0.05)),
         "dropout": float(st.session_state.get("dropout", 0.1)),
@@ -326,7 +440,9 @@ if st.button("Run pipeline", type="primary"):
         "protocol_id": protocol_id if protocol_id.strip() else None,
         "replacement_subjects": replacement_subjects,
         "visit_day_numbering": visit_day_numbering,
+        "protocol_condition": protocol_condition,
         "nti": st.session_state.get("nti_flag"),
+        "study_phase": study_phase,
         "schedule_days": st.session_state.get("schedule_days") or None,
         "hospitalization_duration_days": st.session_state.get("hospitalization_duration_days") or None,
         "sampling_duration_days": st.session_state.get("sampling_duration_days") or None,
@@ -334,6 +450,9 @@ if st.button("Run pipeline", type="primary"):
         "phone_follow_up_ok": st.session_state.get("phone_follow_up_ok"),
         "blood_volume_total_ml": st.session_state.get("blood_volume_total_ml") or None,
         "blood_volume_pk_ml": st.session_state.get("blood_volume_pk_ml") or None,
+        "gender_requirement": gender_requirement or None,
+        "age_range": age_range.strip() or None,
+        "additional_constraints": additional_constraints.strip() or None,
     }
     try:
         resp = api_post("/run_pipeline", payload)
@@ -355,6 +474,10 @@ if st.button("Извлечь PK"):
 
 pk = st.session_state.get("pk")
 pk_values_display = _as_list((st.session_state.get("fullreport") or {}).get("pk_values") or (pk or {}).get("pk_values"))
+study_condition = (st.session_state.get("fullreport") or {}).get("study_condition") or (pk or {}).get(
+    "study_condition"
+)
+meal_details = (st.session_state.get("fullreport") or {}).get("meal_details") or (pk or {}).get("meal_details") or {}
 if pk_values_display:
     pk_rows = []
     for pkv in pk_values_display:
@@ -375,6 +498,14 @@ if pk_values_display:
         st.warning("; ".join(pk.get("warnings")))
     if pk and pk.get("validation_issues"):
         st.warning(f"Validation issues: {pk.get('validation_issues')}")
+    if study_condition:
+        st.caption(f"Study condition: {study_condition}")
+    if meal_details:
+        details_text = ", ".join(
+            [f"{key}={value}" for key, value in meal_details.items() if value not in (None, "")]
+        )
+        if details_text:
+            st.caption(f"Meal details: {details_text}")
 
 
 st.subheader("3) Design")
@@ -557,6 +688,13 @@ st.subheader("6) Data Quality + Reg-check")
 data_quality = (st.session_state.get("fullreport") or {}).get("data_quality")
 if data_quality:
     st.metric("Data Quality Index", value=str(data_quality.get("score", "—")))
+    components = data_quality.get("components") or {}
+    traceability = components.get("traceability")
+    if traceability is not None:
+        try:
+            st.caption(f"Traceability component: {float(traceability):.2f}")
+        except Exception:
+            st.caption(f"Traceability component: {traceability}")
     st.write(data_quality)
 else:
     st.info("Data Quality: Not computed.")
@@ -600,61 +738,177 @@ with st.expander("Дополнительные параметры политик
     st.number_input("Blood volume total (mL)", value=0.0, min_value=0.0, key="blood_volume_total_ml")
     st.number_input("Blood volume PK-only (mL)", value=0.0, min_value=0.0, key="blood_volume_pk_ml")
 
-if st.button("Проверить чек-лист") and pk:
+if st.session_state.get("fullreport"):
+    st.success("✅ Регуляторный чек-лист выполнен в рамках Run pipeline — результаты в секции 6 выше.")
+elif pk:
     design = st.session_state.get("design")
-    if not design:
-        st.warning("⚠️ Дизайн не определён. Сначала нажмите 'Подобрать дизайн' в секции 3.")
-        st.stop()
-    cv_payload = None
-    cv_payload_value = manual_cv_value if manual_cv_value is not None else cv_extracted_value
-    if cv_payload_value is not None:
-        cv_payload = {
-            "cv": {
-                "value": float(cv_payload_value),
-                "unit": "%",
-                "evidence": [
+    if st.button("Проверить чек-лист (ручной режим)"):
+        if not design:
+            st.warning("⚠️ Дизайн не определён. Сначала нажмите 'Подобрать дизайн' в секции 3.")
+        else:
+            cv_payload = None
+            cv_payload_value = manual_cv_value if manual_cv_value is not None else cv_extracted_value
+            if cv_payload_value is not None:
+                cv_payload = {
+                    "cv": {
+                        "value": float(cv_payload_value),
+                        "unit": "%",
+                        "evidence": [{"source_type": "URL", "source": "manual://user",
+                                      "snippet": "User input", "context": "Manual CV input"}],
+                    },
+                    "confirmed": bool(cv_confirmed),
+                }
+            try:
+                resp = api_post(
+                    "/reg_check",
                     {
-                        "source_type": "URL",
-                        "source": "manual://user",
-                        "snippet": "User input",
-                        "context": "Manual CV input",
-                    }
-                ],
-            },
-            "confirmed": bool(cv_confirmed),
-        }
-    try:
-        resp = api_post(
-            "/reg_check",
-            {
-                "design": design,
-                "pk_json": pk,
-                "schedule_days": st.session_state.get("schedule_days") or None,
-                "cv_input": cv_payload,
-                "hospitalization_duration_days": st.session_state.get("hospitalization_duration_days") or None,
-                "sampling_duration_days": st.session_state.get("sampling_duration_days") or None,
-                "follow_up_duration_days": st.session_state.get("follow_up_duration_days") or None,
-                "phone_follow_up_ok": st.session_state.get("phone_follow_up_ok"),
-                "blood_volume_total_ml": st.session_state.get("blood_volume_total_ml") or None,
-                "blood_volume_pk_ml": st.session_state.get("blood_volume_pk_ml") or None,
-            },
-        )
-        st.session_state["reg"] = resp
-        st.success("Чек-лист готов")
-    except Exception as exc:
-        st.error(f"Ошибка чек-листа: {exc}")
+                        "design": design,
+                        "pk_json": pk,
+                        "schedule_days": st.session_state.get("schedule_days") or None,
+                        "cv_input": cv_payload,
+                        "hospitalization_duration_days": st.session_state.get("hospitalization_duration_days") or None,
+                        "sampling_duration_days": st.session_state.get("sampling_duration_days") or None,
+                        "follow_up_duration_days": st.session_state.get("follow_up_duration_days") or None,
+                        "phone_follow_up_ok": st.session_state.get("phone_follow_up_ok"),
+                        "blood_volume_total_ml": st.session_state.get("blood_volume_total_ml") or None,
+                        "blood_volume_pk_ml": st.session_state.get("blood_volume_pk_ml") or None,
+                    },
+                )
+                st.session_state["reg"] = resp
+                st.success("Чек-лист готов")
+            except Exception as exc:
+                st.error(f"Ошибка чек-листа: {exc}")
+else:
+    st.info("ℹ️ Регуляторный чек-лист запускается автоматически при нажатии ▶ Run pipeline.")
+
+
+def _build_markdown_synopsis(report: dict) -> str:
+    study = report.get("study") or {}
+    design_obj = report.get("design") or study.get("design") or {}
+    dq = report.get("dqi") or report.get("data_quality") or {}
+    lines = [
+        f"# Синопсис протокола исследования биоэквивалентности",
+        "",
+        f"**Действующее вещество (INN):** {report.get('inn', '—')}",
+        f"**Лекарственная форма:** {report.get('dosage_form') or '—'}",
+        f"**Дозировка:** {report.get('dose') or '—'}",
+        f"**Номер протокола:** {report.get('protocol_id') or '—'}",
+        f"**Статус:** {report.get('protocol_status') or '—'}",
+        "",
+        "## Цель исследования",
+        f"Оценка биоэквивалентности тестового и референтного препаратов "
+        f"действующего вещества {report.get('inn', '—')} у здоровых добровольцев.",
+        "",
+        "## Задачи исследования",
+        "1. Определить фармакокинетические параметры (Cmax, AUC0-t, AUC0-inf).",
+        "2. Провести статистическое сравнение PK-параметров.",
+        "3. Оценить безопасность и переносимость.",
+        "",
+        "## Дизайн исследования",
+    ]
+    rec = (design_obj.get("recommendation") or design_obj.get("recommended")
+           or design_obj.get("design") or "—")
+    lines.append(f"- **Рекомендованный дизайн:** {rec}")
+    lines.append(f"- **Режим приёма:** {report.get('protocol_condition') or '—'}")
+    lines.append(f"- **Тип исследования:** {report.get('study_phase') or 'auto'}")
+    lines.append("")
+    lines.append("## Обоснование дизайна")
+    reasoning = design_obj.get("reasoning_text") or design_obj.get("reasoning") or "—"
+    if isinstance(reasoning, list):
+        reasoning = "; ".join(str(r) for r in reasoning)
+    lines.append(reasoning)
+    lines.append("")
+    lines.append("## Исследуемая популяция")
+    lines.append(f"- **Пол:** {report.get('gender_requirement') or '—'}")
+    lines.append(f"- **Возраст:** {report.get('age_range') or '—'}")
+    if report.get("additional_constraints"):
+        lines.append(f"- **Ограничения:** {report['additional_constraints']}")
+    lines.append("")
+    lines.append("## Первичные конечные точки")
+    lines.append("Cmax, AUC0-t (90% ДИ отношения геометрических средних: 80.00–125.00%).")
+    lines.append("")
+    lines.append("## Фармакокинетические параметры")
+    pk_vals = report.get("pk_values") or []
+    if pk_vals:
+        lines.append("| Параметр | Значение | Единицы |")
+        lines.append("|---|---|---|")
+        for pk in pk_vals:
+            n = pk.get("name", "—")
+            v = pk.get("value", "—")
+            u = pk.get("unit", "—")
+            lines.append(f"| {n} | {v} | {u} |")
+    else:
+        lines.append("Данные не извлечены.")
+    lines.append("")
+    lines.append("## Размер выборки")
+    sdet = report.get("sample_size_det") or {}
+    if sdet.get("n_total"):
+        lines.append(f"- N_det (total): {sdet['n_total']}, rand: {sdet.get('n_rand', '—')}, screen: {sdet.get('n_screen', '—')}")
+        lines.append(f"- CV: {sdet.get('cv', '—')}%, power: {sdet.get('power', '—')}, alpha: {sdet.get('alpha', '—')}")
+    else:
+        lines.append("N_det не рассчитан (требуется подтверждённый CV).")
+    lines.append("")
+    lines.append("## Статистические методы")
+    lines.append("ANOVA логарифмически преобразованных PK-параметров. 90% ДИ для Test/Reference. Критерий: 80.00–125.00%.")
+    lines.append("")
+    lines.append("## План мониторинга безопасности")
+    lines.append("Мониторинг нежелательных явлений, витальных показателей и лабораторных данных на протяжении всего исследования.")
+    lines.append("")
+    lines.append("## Качество данных (DQI)")
+    lines.append(f"- Score: {dq.get('score', '—')}, Level: {dq.get('level', '—')}")
+    for r in (dq.get("reasons") or [])[:3]:
+        lines.append(f"  - {r}")
+    lines.append("")
+    lines.append("## Регуляторные замечания / Open Questions")
+    oq = report.get("open_questions") or []
+    if oq:
+        for q in oq:
+            txt = q.get("question") if isinstance(q, dict) else str(q)
+            lines.append(f"- {txt}")
+    else:
+        lines.append("Нет открытых вопросов.")
+    lines.append("")
+    lines.append("## Библиографический список источников")
+    sources = report.get("sources") or []
+    if sources:
+        for i, s in enumerate(sources, 1):
+            pmid = s.get("pmid", "—")
+            title = s.get("title", "—")
+            year = s.get("year", "—")
+            lines.append(f"{i}. {title} ({year}) PMID:{pmid}")
+    else:
+        lines.append("Источники не определены.")
+    lines.append("")
+    return "\n".join(lines)
 
 
 st.subheader("8) Export")
 fullreport_export = st.session_state.get("fullreport") or {
     "inn": inn,
+    "dosage_form": dosage_form.strip() or None,
+    "dose": dose.strip() or None,
     "protocol_id": protocol_id if protocol_id.strip() else None,
     "protocol_status": protocol_status,
     "replacement_subjects": replacement_subjects,
     "visit_day_numbering": visit_day_numbering,
+    "protocol_condition": protocol_condition,
+    "study_phase": study_phase,
+    "gender_requirement": gender_requirement or None,
+    "age_range": age_range.strip() or None,
+    "additional_constraints": additional_constraints.strip() or None,
+    "schedule_days": st.session_state.get("schedule_days") or None,
+    "hospitalization_duration_days": st.session_state.get("hospitalization_duration_days") or None,
+    "sampling_duration_days": st.session_state.get("sampling_duration_days") or None,
+    "follow_up_duration_days": st.session_state.get("follow_up_duration_days") or None,
+    "phone_follow_up_ok": st.session_state.get("phone_follow_up_ok"),
+    "blood_volume_total_ml": st.session_state.get("blood_volume_total_ml") or None,
+    "blood_volume_pk_ml": st.session_state.get("blood_volume_pk_ml") or None,
     "sources": st.session_state.get("sources", []),
     "pk_values": (st.session_state.get("pk") or {}).get("pk_values", []),
     "ci_values": (st.session_state.get("pk") or {}).get("ci_values", []),
+    "study_condition": (st.session_state.get("pk") or {}).get("study_condition"),
+    "meal_details": (st.session_state.get("pk") or {}).get("meal_details"),
+    "design_hints": (st.session_state.get("pk") or {}).get("design_hints"),
     "design": st.session_state.get("design"),
     "sample_size_det": st.session_state.get("sample"),
     "sample_size_risk": (st.session_state.get("fullreport") or {}).get("sample_size_risk"),
@@ -663,12 +917,26 @@ fullreport_export = st.session_state.get("fullreport") or {
 }
 
 json_blob = json.dumps(fullreport_export, ensure_ascii=False, indent=2)
-st.download_button(
-    "Download FullReport.json",
-    data=json_blob,
-    file_name="FullReport.json",
-    mime="application/json",
-)
+
+export_col1, export_col2, export_col3 = st.columns(3)
+with export_col1:
+    st.download_button(
+        "Download FullReport.json",
+        data=json_blob,
+        file_name="FullReport.json",
+        mime="application/json",
+    )
+with export_col2:
+    md_text = _build_markdown_synopsis(fullreport_export)
+    st.download_button(
+        "Download synopsis.md",
+        data=md_text,
+        file_name="synopsis.md",
+        mime="text/markdown",
+    )
+
+with export_col3:
+    pass
 
 if st.button("Build synopsis .docx"):
     try:

@@ -21,6 +21,11 @@ drivers:
     reason: "If patients must stay on therapy (no washout possible), use parallel design:contentReference[oaicite:5]{index=5}."
 
 classification_rules:
+  RSABE:
+    condition: "CVintra >= 0.50"
+    tag: "RSABE"
+    design: "4-way_replicate"
+    note: "Reference-Scaled ABE required (EAEU Decision 85)"
   HVD:
     condition: "intra_subject_CV > 30%"
     tag: "Highly_Variable_Drug"

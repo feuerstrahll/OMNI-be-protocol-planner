@@ -1,0 +1,92 @@
+[
+  {
+    "inputs": {
+      "pmid": "12345678",
+      "Cmax": 245.0,
+      "AUC": 1850.0,
+      "CV": 34.0,
+      "CI": {
+        "low": 0.89,
+        "high": 1.07,
+        "n": 24
+      }
+    },
+    "expected_outputs": {
+      "dqi_level": null,
+      "recommended_design": "2x2_crossover",
+      "n_det": []
+    }
+  },
+  {
+    "inputs": {
+      "pmid": "23456789",
+      "Cmax": 310.0,
+      "AUC": 2100.0,
+      "CV": null,
+      "CI": {
+        "low": 0.85,
+        "high": 1.12,
+        "n": 28
+      }
+    },
+    "expected_outputs": {
+      "dqi_level": null,
+      "recommended_design": "2x2_crossover",
+      "n_det": []
+    }
+  },
+  {
+    "inputs": {
+      "pmid": "34567890",
+      "Cmax": 120.0,
+      "AUC": 980.0,
+      "CV": null,
+      "CI": {
+        "low": 0.92,
+        "high": 1.08,
+        "n": 36
+      }
+    },
+    "expected_outputs": {
+      "dqi_level": null,
+      "recommended_design": "parallel",
+      "n_det": []
+    }
+  },
+  {
+    "inputs": {
+      "pmid": "45678901",
+      "Cmax": 500.0,
+      "AUC": 4500.0,
+      "CV": 48.0,
+      "CI": {
+        "low": 0.8,
+        "high": 1.25,
+        "n": 40
+      }
+    },
+    "expected_outputs": {
+      "dqi_level": null,
+      "recommended_design": "replicate",
+      "n_det": []
+    }
+  },
+  {
+    "inputs": {
+      "pmid": "56789012",
+      "Cmax": 150.0,
+      "AUC": 1200.0,
+      "CV": 22.0,
+      "CI": {
+        "low": 0.95,
+        "high": 1.05,
+        "n": 18
+      }
+    },
+    "expected_outputs": {
+      "dqi_level": null,
+      "recommended_design": "2x2_crossover",
+      "n_det": []
+    }
+  }
+]

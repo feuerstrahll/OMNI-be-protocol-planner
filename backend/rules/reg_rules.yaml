@@ -37,6 +37,16 @@ defaults:
   decision: "OK"
   priority: 1000
 
+# Required PK parameters (Decision 85 / EAEU)
+required_pk:
+  decision_85:
+    id: "DEC85_REQUIRED_PK"
+    category: "pk_parameters"
+    priority: "high"
+    parameters: ["AUC(0-t)", "Cmax", "t1/2"]
+    message: "Missing required PK parameters (Decision 85 / EAEU)."
+    clarify_text: "Provide AUC(0-t), Cmax, and t1/2 (or lambda_z) as required by Decision 85."
+
 # Supported ops (suggested for backend):
 # exists, not_exists, eq, ne, gt, gte, lt, lte, in, not_in, contains, truthy, falsy
 
@@ -91,11 +101,11 @@ rules:
     when:
       all:
         - { field: "cv.cvintra.source", op: "eq", value: "derived_from_ci" }
-      any:
-        - { field: "cv.derived_from_ci.ci90_low", op: "not_exists" }
-        - { field: "cv.derived_from_ci.ci90_high", op: "not_exists" }
-        - { field: "cv.derived_from_ci.n_total", op: "not_exists" }
-        - { field: "cv.derived_from_ci.assumptions_confirmed_by_human", op: "falsy" }
+        - any:
+            - { field: "cv.derived_from_ci.ci90_low", op: "not_exists" }
+            - { field: "cv.derived_from_ci.ci90_high", op: "not_exists" }
+            - { field: "cv.derived_from_ci.n_total", op: "not_exists" }
+            - { field: "cv.derived_from_ci.assumptions_confirmed_by_human", op: "falsy" }
     message: >
       CVintra получен из 90% CI для GMR (T/R) (ветка CVfromCI): требуется явное подтверждение допущений
       (log-scale, корректность CI и n, применимость дизайна/df).
@@ -141,23 +151,58 @@ rules:
       - "Убедитесь, что запрос widened interval будет prospectively specified в протоколе."
       - "Напоминание: даже при widening, GMR должен оставаться в 80.00–125.00%."
 
-  - id: "REG-006"
-    title: "Long half-life / carry-over: washout, truncated AUC, possible parallel design"
+  - id: "REG-006a"
+    title: "Carry-over risk: truncated AUC consideration"
     decision: "CLARIFY"
     priority: 60
-    tags: ["half_life", "carryover", "washout", "truncated_auc"]
+    tags: ["half_life", "carryover", "truncated_auc"]
+    when:
+      all:
+        - { field: "pk.t12_hours", op: "gte", value: 24 }
+    message: "Carry-over risk. Consider truncated AUC0-72h."
+    what_to_clarify:
+      - "Confirm whether truncated AUC(0?72h) should be used for long half-life compounds."
+
+  - id: "REG-006b"
+    title: "Very long half-life: parallel design recommended"
+    decision: "RISK"
+    priority: 61
+    tags: ["half_life", "parallel"]
+    when:
+      all:
+        - { field: "pk.t12_hours", op: "gte", value: 150 }
+    message: "T1/2 > 150h. Parallel design strongly recommended."
+    what_to_clarify:
+      - "Confirm parallel design selection due to very long half-life."
+
+  - id: "OQ-301"
+    title: "CV from range or missing: provide expected CVintra"
+    decision: "CLARIFY"
+    priority: 35
+    tags: ["cv", "variability", "OQ-301"]
     when:
       any:
-        - { field: "pk.t12_hours", op: "gte", value: 24 }
-        - { field: "warnings", op: "contains", value: "carryover_risk" }
+        - { field: "cv.cvintra.source", op: "eq", value: "variability_range" }
+        - { field: "cv.cvintra.source", op: "eq", value: "range" }
+        - { field: "cv.cvintra.source", op: "is_null", value: true }
     message: >
-      Длинный период полувыведения (t1/2 ≥ 24ч) / риск carry-over: требуется обоснование washout и контроля pre-dose.
-      Для long half-life может быть нужен truncated AUC(0–72h); если кроссовер непрактичен — рассмотреть parallel design.
+      CVintra задан диапазоном или отсутствует. Укажите ожидаемый точный CVintra для расчёта N_det.
+      До тех пор будет использоваться risk-based N.
     what_to_clarify:
-      - "Укажите washout (обычно ≥ 5 периодов полувыведения) и почему он достаточен."
-      - "Как будет контролироваться carry-over (pre-dose концентрации, критерии исключения/обращение с данными)."
-      - "Если t1/2 ≥ 24ч: подтвердите использование AUC(0–72h) как основной AUC-параметр или обоснуйте альтернативу."
-      - "Если washout чрезмерный/непрактичный — подтвердите необходимость parallel design и последствия для вариабельности/мощности."
+      - "Введите ожидаемый CVintra для AUC и Cmax (ручной ввод или пресет) и отметьте основание (внутренние данные/экспертная оценка)."
+
+  - id: "CV_CONFIRM_NDET"
+    title: "CV not confirmed by user"
+    decision: "CLARIFY"
+    priority: 36
+    tags: ["cv", "gating"]
+    when:
+      all:
+        - { field: "cv.cvintra.value", op: "is_not_null", value: true }
+        - { field: "cv.cvintra.confirmed_by_human", op: "falsy" }
+    message: "Подтвердите значение CVintra, чтобы разблокировать детерминированный расчёт выборки (N_det)."
+    what_to_clarify:
+      - "Подтвердите CVintra (чекбокс) для включения N_det calculation."
 
   - id: "REG-007"
     title: "Conflicts between sources: requires manual resolution"
@@ -175,3 +220,30 @@ rules:
       - "Какой источник/таблица является первичной базой для чисел (PMID/раздел/таблица)?"
       - "Почему альтернативные значения отвергнуты (популяция/условия/дизайн/ошибка единиц/метод анализа)?"
       - "Зафиксируйте выбранные значения и внесите заметку в audit trail (reason + evidence)."
+
+  - id: "REG-008"
+    title: "Unknown Fed/Fasted state (OQ-160)"
+    decision: "CLARIFY"
+    priority: 15
+    tags: ["fed_fasted", "conduct", "OQ-160"]
+    when:
+      all:
+        - { field: "study.fed_fasted", op: "eq", value: "unknown" }
+        - { field: "study.protocol_condition", op: "is_null", value: true }
+    message: "Feeding condition (Fasted/Fed) is unknown. Please select protocol condition."
+    what_to_clarify:
+      - "Check the SmPC/label to determine if Fasted or Fed BE study is required."
+      - "Select protocol condition (Fasted/Fed) in the UI."
+
+  - id: "REG-008B"
+    title: "Protocol condition selected but not evidenced in sources"
+    decision: "RISK"
+    priority: 25
+    tags: ["fed_fasted", "OQ-160"]
+    when:
+      all:
+        - { field: "study.fed_fasted", op: "eq", value: "unknown" }
+        - { field: "study.protocol_condition", op: "is_not_null", value: true }
+    message: "Protocol condition is user-selected, but feeding state was not evidenced in sources. Verify via SmPC/label."
+    what_to_clarify:
+      - "Confirm protocol condition against SmPC/label."

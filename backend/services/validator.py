@@ -1,10 +1,11 @@
 ﻿from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Tuple
 
 import yaml
 
-from backend.schemas import PKValue, ValidationIssue
+from backend.schemas import CIValue, PKValue, ValidationIssue
 
 
 class PKValidator:
@@ -28,11 +29,13 @@ class PKValidator:
             self.normalization = self._build_normalization_from_rules(self.rules)
             self.warning_rules = self.rules.get("warnings") or []
 
-    def validate(self, pk_values: List[PKValue]) -> List[ValidationIssue]:
-        issues, _ = self.validate_with_warnings(pk_values)
+    def validate(self, pk_values: List[PKValue], ci_values: Optional[List[CIValue]] = None) -> List[ValidationIssue]:
+        issues, _ = self.validate_with_warnings(pk_values, ci_values)
         return issues
 
-    def validate_with_warnings(self, pk_values: List[PKValue]) -> Tuple[List[ValidationIssue], List[str]]:
+    def validate_with_warnings(
+        self, pk_values: List[PKValue], ci_values: Optional[List[CIValue]] = None
+    ) -> Tuple[List[ValidationIssue], List[str]]:
         issues: List[ValidationIssue] = []
         global_warnings: List[str] = []
         metric_rules: Dict[str, Dict] = self.metric_rules
@@ -120,8 +123,66 @@ class PKValidator:
 
             self._apply_warning_rules(pk)
 
+        if ci_values:
+            self._check_ci_vs_cv(pk_values, ci_values, issues, global_warnings)
         self._detect_conflicts(pk_values, issues, global_warnings)
         return issues, global_warnings
+
+    def _check_ci_vs_cv(
+        self,
+        pk_values: List[PKValue],
+        ci_values: List[CIValue],
+        issues: List[ValidationIssue],
+        global_warnings: List[str],
+    ) -> None:
+        cv_value = next((pk.value for pk in pk_values if pk.name == "CVintra" and pk.value is not None), None)
+        if cv_value is None:
+            return
+        try:
+            cv_ratio = float(cv_value) / 100.0
+        except Exception:
+            return
+        if cv_ratio <= 0:
+            return
+
+        for ci in ci_values:
+            if ci.n is None or ci.ci_low is None or ci.ci_high is None:
+                continue
+            try:
+                n = int(ci.n)
+                ci_low = float(ci.ci_low)
+                ci_high = float(ci.ci_high)
+            except Exception:
+                continue
+            if n <= 0 or ci_low <= 0 or ci_high <= 0:
+                continue
+            if ci_low >= ci_high:
+                continue
+
+            ci_low_ratio = ci_low / 100.0 if ci.ci_type == "percent" else ci_low
+            ci_high_ratio = ci_high / 100.0 if ci.ci_type == "percent" else ci_high
+
+            sd_log = math.sqrt(math.log(1 + cv_ratio**2))
+            se = math.sqrt(2.0 / n) * sd_log
+            half_width_expected = 1.645 * se
+            width_expected = 2 * half_width_expected
+            width_actual = abs(math.log(ci_high_ratio) - math.log(ci_low_ratio))
+            if width_expected <= 0:
+                continue
+            rel_diff = abs(width_actual - width_expected) / width_expected
+            if rel_diff > 0.5:
+                message = (
+                    f"CI width conflicts with CV={cv_value}% and n={n}: "
+                    f"expected ~{width_expected:.2f} (log-scale), got {width_actual:.2f}."
+                )
+                issues.append(
+                    ValidationIssue(
+                        metric=f"CI_{ci.param}",
+                        severity="WARN",
+                        message=message,
+                    )
+                )
+                global_warnings.append("conflict_detected:ci_vs_cv")
 
     def _detect_conflicts(
         self,

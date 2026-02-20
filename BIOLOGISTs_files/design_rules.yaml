@@ -1,0 +1,37 @@
+baseline_design: "2x2 crossover"
+
+drivers:
+  high_intra_subject_variability:
+    recommended_design: "Replicate crossover (e.g. 2×2×4 full replicate)"
+    reason: "Highly variable drugs (within-subject CV > ~30%) benefit from replicate designs to reduce variability:contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}."
+  narrow_therapeutic_index:
+    recommended_design: "Replicate crossover"
+    reason: "Narrow therapeutic index drugs require scaled-average BE analysis, usually in a replicate design:contentReference[oaicite:2]{index=2}."
+  long_half_life:
+    recommended_design: "Parallel (or extended washout in crossover)"
+    reason: "Very long elimination half-life (t½ large) implies impractically long washout; a parallel design avoids carryover:contentReference[oaicite:3]{index=3}:contentReference[oaicite:4]{index=4}."
+  carryover_risk:
+    recommended_design: "Parallel"
+    reason: "Drugs with high carryover potential favor a parallel design (or replicate with long washout) to avoid period effects."
+  multiple_formulations_or_conditions:
+    recommended_design: "Parallel or extended sequence design"
+    reason: "Testing multiple treatments or conditions (e.g. different formulations/fed states) may require additional arms best handled in parallel."
+  ethical_steady_state:
+    recommended_design: "Parallel"
+    reason: "If patients must stay on therapy (no washout possible), use parallel design:contentReference[oaicite:5]{index=5}."
+
+classification_rules:
+  HVD:
+    condition: "intra_subject_CV > 30%"
+    tag: "Highly_Variable_Drug"
+  NTI:
+    condition: "is_NTI == true"
+    tag: "Narrow_Therapeutic_Index"
+  Long_t_half:
+    condition: "half_life > threshold (e.g. 72h)"
+    tag: "Long_Half_Life"
+
+confidence_levels:
+  high: 0.8
+  medium: 0.6
+  low: 0.4

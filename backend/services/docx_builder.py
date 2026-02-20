@@ -4,17 +4,18 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-import jinja2
-from docxtpl import DocxTemplate
-
+from backend.services.docx.synopsis_builder import AUTO_FILLED_HEADINGS, build_synopsis_sections
+from backend.services.docx.writer import write_synopsis_single_table_docx
 from backend.services.render_utils import (
     DEFAULT_PLACEHOLDER,
     safe_join,
+    safe_list,
     safe_num,
     safe_pct,
     safe_str,
     safe_table,
 )
+from backend.services.synopsis_requirements import REQUIRED_HEADINGS, evaluate_synopsis_completeness
 from backend.services.utils import now_iso
 
 
@@ -24,17 +25,11 @@ class DocxRenderError(RuntimeError):
         self.warnings = warnings or []
 
 
+def safe(value: Any, default: str = DEFAULT_PLACEHOLDER) -> str:
+    return safe_str(value, default=default)
+
+
 def build_docx(all_json: Dict) -> str:
-    template_path = os.path.join("templates", "synopsis_template.docx")
-    if not os.path.exists(template_path):
-        raise FileNotFoundError(f"Template not found: {template_path}")
-
-    doc = DocxTemplate(template_path)
-    if getattr(doc, "jinja_env", None) is not None:
-        doc.jinja_env.undefined = _SafeUndefined
-    else:
-        doc.jinja_env = jinja2.Environment(undefined=_SafeUndefined)
-
     inn = str(all_json.get("inn") or all_json.get("search", {}).get("inn") or "unknown")
     safe_inn = re.sub(r"[^a-zA-Z0-9_-]+", "_", inn).strip("_") or "unknown"
     protocol_id = all_json.get("protocol_id") or all_json.get("protocol", {}).get("id")
@@ -50,24 +45,93 @@ def build_docx(all_json: Dict) -> str:
     sources = _as_list(report.get("sources"))
     pk_values = _as_list(report.get("pk_values"))
     ci_values = _as_list(report.get("ci_values"))
-    reg_checks = _as_list(report.get("reg_check"))
-    open_questions = _as_list(report.get("open_questions") or (report.get("reg") or {}).get("open_questions"))
+    reg_checks = _as_list(report.get("reg_check") or (report.get("reg_check_summary") or {}).get("items"))
+    open_questions = _as_list(
+        report.get("open_questions") or (report.get("reg_check_summary") or {}).get("open_questions")
+    )
 
     sources_table = _build_sources_table(sources)
     pk_table = _build_pk_table(pk_values)
     ci_table = _build_ci_table(ci_values)
     reg_check_table = _build_reg_check_table(reg_checks)
-    open_questions_table = _build_open_questions_table(open_questions)
+    open_questions_list = list(open_questions)
+    for item in reg_checks:
+        if safe_str(_get(item, "status")).upper() == "CLARIFY":
+            clarifications = _get(item, "what_to_clarify") or []
+            if clarifications:
+                for line in clarifications:
+                    open_questions_list.append(
+                        {
+                            "question": safe_str(line),
+                            "priority": "medium",
+                            "category": "reg_check",
+                            "linked_rule_id": safe_str(_get(item, "rule_id")),
+                        }
+                    )
+            else:
+                open_questions_list.append(
+                    {
+                        "question": safe_str(_get(item, "message")),
+                        "priority": "medium",
+                        "category": "reg_check",
+                        "linked_rule_id": safe_str(_get(item, "rule_id")),
+                    }
+                )
+    validation_issues = _as_list(report.get("validation_issues"))
+    for issue in validation_issues:
+        message = safe_str(_get(issue, "message"))
+        if message:
+            open_questions_list.append(
+                {
+                    "question": f"Validation: {message}",
+                    "priority": "medium",
+                    "category": "validation",
+                    "linked_rule_id": safe_str(_get(issue, "metric")),
+                }
+            )
+    open_questions_table = _build_open_questions_table(open_questions_list)
 
-    data_quality = report.get("data_quality") or {}
+    synopsis_eval = evaluate_synopsis_completeness(report)
+    if synopsis_eval.get("missing_fields"):
+        for heading in synopsis_eval.get("missing_fields", []):
+            if heading in AUTO_FILLED_HEADINGS:
+                continue
+            open_questions_table.append(
+                {
+                    "question": f"Provide content for section: {heading}",
+                    "priority": "medium",
+                    "category": "synopsis",
+                    "linked_rule_id": "SYNOPSIS_MISSING",
+                }
+            )
+
+    data_quality = report.get("dqi") or report.get("data_quality") or {}
     dq_score = safe_num(_get(data_quality, "score"), default=DEFAULT_PLACEHOLDER, ndigits=0)
     dq_level = safe_str(_get(data_quality, "level"), default="Not computed")
-    dq_reasons = safe_join(_get(data_quality, "reasons") or [], default=DEFAULT_PLACEHOLDER)
+    dq_reasons_list = _get(data_quality, "reasons") or []
+    dq_reasons = safe_join(dq_reasons_list, default=DEFAULT_PLACEHOLDER)
+    dq_reasons_top = safe_join(dq_reasons_list[:3], default=DEFAULT_PLACEHOLDER)
+    dq_summary = f"{dq_level} (score: {dq_score})"
+    if dq_level == "red" and dq_reasons_list:
+        if len(open_questions_table) == 1 and open_questions_table[0].get("question") == "No items":
+            open_questions_table = []
+        for reason in dq_reasons_list[:3]:
+            open_questions_table.append(
+                {
+                    "question": f"DQI: {safe_str(reason)}",
+                    "priority": "high",
+                    "category": "data_quality",
+                    "linked_rule_id": "DQI",
+                }
+            )
 
-    cv_info = report.get("cv_info") or {}
+    cv_info = report.get("cv") or report.get("cv_info") or {}
     cv_value = safe_pct(_get(cv_info, "value"))
-    cv_source = safe_str(_get(cv_info, "cv_source") or _get(cv_info, "source"), default=DEFAULT_PLACEHOLDER)
-    cv_confirmed = bool(_get(cv_info, "confirmed_by_user")) if cv_info else False
+    cv_source = safe_str(
+        _get(cv_info, "method") or _get(cv_info, "cv_source") or _get(cv_info, "source"),
+        default=DEFAULT_PLACEHOLDER,
+    )
+    cv_confirmed = bool(_get(cv_info, "confirmed_by_human") or _get(cv_info, "confirmed_by_user")) if cv_info else False
     cv_status_line = "CV: not available"
     if _get(cv_info, "value") is not None:
         cv_status_line = f"CV: {cv_value}"
@@ -76,24 +140,44 @@ def build_docx(all_json: Dict) -> str:
     cv_confirmation_line = "CV not confirmed (N_det disabled)" if cv_info and not cv_confirmed else ""
     cv_ci_low, cv_ci_high, cv_ci_n = _find_ci_fields(ci_values)
 
-    design = report.get("design") or {}
+    design = report.get("design") or (report.get("study") or {}).get("design") or {}
     design_recommendation = safe_str(
-        _get(design, "recommendation"), default="Design not determined (insufficient inputs)"
+        _get(design, "recommendation") or _get(design, "recommended"),
+        default="Design not determined (insufficient inputs)",
     )
     design_reasoning = safe_str(_get(design, "reasoning_text"), default=DEFAULT_PLACEHOLDER)
 
-    sample_det = report.get("sample_size_det")
+    sample_det = report.get("sample_size_det") or _get(report.get("sample_size") or {}, "n_det")
+    allow_n_det = _get(data_quality, "allow_n_det")
     n_det_status = "N_det not computed (requires confirmed CV)"
     n_det_total = DEFAULT_PLACEHOLDER
     n_det_rand = DEFAULT_PLACEHOLDER
     n_det_screen = DEFAULT_PLACEHOLDER
+    n_det_details_parts: List[str] = []
     if sample_det:
         n_det_status = ""
-        n_det_total = safe_num(_get(sample_det, "n_total"))
+        n_det_total = safe_num(_get(sample_det, "n_total") or _get(sample_det, "n_analysis"))
         n_det_rand = safe_num(_get(sample_det, "n_rand"))
         n_det_screen = safe_num(_get(sample_det, "n_screen"))
+        n_det_cv = safe_pct(_get(sample_det, "cv"))
+        n_det_power = safe_pct(_get(sample_det, "power"))
+        n_det_alpha = safe_pct(_get(sample_det, "alpha"))
+        n_det_dropout = safe_pct(_get(sample_det, "dropout"))
+        n_det_screen_fail = safe_pct(_get(sample_det, "screen_fail"))
+        if n_det_cv != DEFAULT_PLACEHOLDER:
+            n_det_details_parts.append(f"CV={n_det_cv}")
+        if n_det_power != DEFAULT_PLACEHOLDER:
+            n_det_details_parts.append(f"power={n_det_power}")
+        if n_det_alpha != DEFAULT_PLACEHOLDER:
+            n_det_details_parts.append(f"alpha={n_det_alpha}")
+        if n_det_dropout != DEFAULT_PLACEHOLDER:
+            n_det_details_parts.append(f"dropout={n_det_dropout}")
+        if n_det_screen_fail != DEFAULT_PLACEHOLDER:
+            n_det_details_parts.append(f"screen-fail={n_det_screen_fail}")
+    if allow_n_det is False:
+        n_det_status = "N_det is not computed due to Data Quality (Red Flag) / missing primary endpoints."
 
-    sample_risk = report.get("sample_size_risk")
+    sample_risk = report.get("sample_size_risk") or _get(report.get("sample_size") or {}, "n_risk")
     n_risk_status = "N_risk not computed (requires CV range/distribution)"
     n_risk_targets = DEFAULT_PLACEHOLDER
     n_risk_p_success = DEFAULT_PLACEHOLDER
@@ -109,69 +193,34 @@ def build_docx(all_json: Dict) -> str:
 
     replacement_subjects = _yes_no(report.get("replacement_subjects"))
     visit_day_numbering = safe_str(report.get("visit_day_numbering"), default="continuous across periods")
-
-    context = {
-        "generated_at": safe_str(now_iso()),
-        "inn": safe_str(inn),
-        "protocol_id": safe_str(protocol_id),
-        "protocol_status": safe_str(protocol_status),
-        "replacement_subjects": replacement_subjects,
-        "visit_day_numbering": visit_day_numbering,
-        "sources": sources_table,
-        "pk_values": pk_table,
-        "ci_values": ci_table,
-        "data_quality_score": dq_score,
-        "data_quality_level": dq_level,
-        "data_quality_reasons": dq_reasons,
-        "cv_value": cv_value,
-        "cv_source": cv_source,
-        "cv_status_line": cv_status_line,
-        "cv_confirmation_line": cv_confirmation_line or DEFAULT_PLACEHOLDER,
-        "cv_ci_low": cv_ci_low,
-        "cv_ci_high": cv_ci_high,
-        "cv_ci_n": cv_ci_n,
-        "design_recommendation": design_recommendation,
-        "design_reasoning": design_reasoning,
-        "n_det_status": n_det_status or DEFAULT_PLACEHOLDER,
-        "n_det_total": n_det_total,
-        "n_det_rand": n_det_rand,
-        "n_det_screen": n_det_screen,
-        "n_risk_status": n_risk_status or DEFAULT_PLACEHOLDER,
-        "n_risk_targets": n_risk_targets,
-        "n_risk_p_success": n_risk_p_success,
-        "n_risk_notes": n_risk_notes,
-        "reg_check": reg_check_table,
-        "open_questions": open_questions_table,
-        "open_questions_text": safe_join([q.get("question") for q in open_questions_table], default="No items"),
-        "sources_note": "No sources selected / Found" if not sources else "",
-        "pk_note": "No PK values extracted" if not pk_values else "",
-        "ci_note": "No CI values extracted" if not ci_values else "",
-        "data": _build_safe_data_map(
-            inn=inn,
-            protocol_id=protocol_id,
-            protocol_status=protocol_status,
-            replacement_subjects=replacement_subjects,
-            visit_day_numbering=visit_day_numbering,
-        ),
-    }
-
-    try:
-        doc.render(context)
-    except Exception as exc:
-        warning = f"DOCX_RENDER_FAILED: {type(exc).__name__}: {exc}"
-        raise DocxRenderError(warning, warnings=[warning]) from exc
+    protocol_condition = safe_str(report.get("protocol_condition") or (report.get("study") or {}).get("protocol_condition"))
+    if not protocol_condition:
+        protocol_condition = DEFAULT_PLACEHOLDER
+    dosing_condition_line = (
+        f"Dosing condition: {protocol_condition.upper()}"
+        if protocol_condition and protocol_condition != DEFAULT_PLACEHOLDER
+        else DEFAULT_PLACEHOLDER
+    )
+    n_det_line = f"N_det: {n_det_total}"
+    if n_det_rand != DEFAULT_PLACEHOLDER or n_det_screen != DEFAULT_PLACEHOLDER:
+        n_det_line = f"{n_det_line} (rand: {n_det_rand}, screen: {n_det_screen})"
+    if n_det_details_parts:
+        n_det_line = f"{n_det_line}; " + ", ".join(n_det_details_parts)
+    sample_size_line = n_det_status or n_det_line
+    if n_risk_status:
+        sample_size_line = f"{sample_size_line}; {n_risk_status}"
+    else:
+        sample_size_line = f"{sample_size_line}; N_risk targets: {n_risk_targets}"
+    synopsis_sections = build_synopsis_sections(report, dq_summary, open_questions_table, sample_size_line)
 
     os.makedirs("output", exist_ok=True)
     out_path = os.path.join("output", f"synopsis_{safe_inn}.docx")
-    doc.save(out_path)
+    try:
+        write_synopsis_single_table_docx(out_path, synopsis_sections, sources)
+    except Exception as exc:
+        warning = f"DOCX_BUILD_FAILED: {type(exc).__name__}: {exc}"
+        raise DocxRenderError(warning, warnings=[warning]) from exc
     return out_path
-
-
-class _SafeUndefined(jinja2.ChainableUndefined):
-    def __str__(self) -> str:  # pragma: no cover - defensive
-        return DEFAULT_PLACEHOLDER
-
-    __repr__ = __str__
 
 
 def _as_list(value: Any) -> List[dict]:
@@ -327,3 +376,4 @@ def _format_dict(data: Any, ndigits: int | None = None) -> List[str]:
     for key, value in items:
         formatted.append(f"{key}: {safe_num(value, ndigits=ndigits)}")
     return formatted
+

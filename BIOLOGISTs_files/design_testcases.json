@@ -1,0 +1,152 @@
+[
+  {
+    "id": 1,
+    "name": "Standard 2×2 crossover",
+    "preconditions": "CV_intra=20%, half_life=8h, not NTI, no carryover risk, oral immediate-release",
+    "steps": "1. Input parameters into design selection system\n2. System computes recommended design",
+    "expected": "Recommend 2×2 crossover design (standard case)",
+    "actual": "",
+    "status": "open",
+    "priority": "medium"
+  },
+  {
+    "id": 2,
+    "name": "Highly variable drug",
+    "preconditions": "CV_intra=35%, half_life=6h, not NTI, no carryover risk",
+    "steps": "Run design algorithm with inputs",
+    "expected": "Recommend full replicate design (e.g. 2×2×4) due to CV>30%",
+    "actual": "",
+    "status": "open",
+    "priority": "high"
+  },
+  {
+    "id": 3,
+    "name": "Narrow therapeutic index",
+    "preconditions": "CV_intra=15%, NTI=true, half_life=12h, no carryover",
+    "steps": "Run design algorithm",
+    "expected": "Recommend replicate design (2×2×4) for NTI scaling",
+    "actual": "",
+    "status": "open",
+    "priority": "high"
+  },
+  {
+    "id": 4,
+    "name": "Long half-life drug",
+    "preconditions": "CV_intra=20%, half_life=72h, not NTI, no carryover risk",
+    "steps": "Run design algorithm",
+    "expected": "Recommend parallel design (or 2×2 crossover with extended washout) due to long t½",
+    "actual": "",
+    "status": "open",
+    "priority": "high"
+  },
+  {
+    "id": 5,
+    "name": "Carryover risk present",
+    "preconditions": "CV_intra=25%, half_life=30h, carryover_risk=true",
+    "steps": "Run design algorithm",
+    "expected": "Recommend parallel design to avoid carryover",
+    "actual": "",
+    "status": "open",
+    "priority": "high"
+  },
+  {
+    "id": 6,
+    "name": "Ethical steady-state constraint",
+    "preconditions": "Patient study, no washout possible (steady state)",
+    "steps": "Run design algorithm",
+    "expected": "Recommend parallel design (e.g. steady-state parallel trial):contentReference[oaicite:6]{index=6}",
+    "actual": "",
+    "status": "open",
+    "priority": "medium"
+  },
+  {
+    "id": 7,
+    "name": "Modified-release formulation",
+    "preconditions": "CV_intra=25%, half_life=24h, formulation=modified release",
+    "steps": "Run design algorithm",
+    "expected": "Increase design robustness (likely 2×2 crossover but monitor variability) due to complex kinetics",
+    "actual": "",
+    "status": "open",
+    "priority": "medium"
+  },
+  {
+    "id": 8,
+    "name": "High dropout risk",
+    "preconditions": "CV_intra=20%, anticipated dropout high, standard conditions",
+    "steps": "Run design algorithm",
+    "expected": "Consider parallel design to mitigate dropouts (avoids losing paired data)",
+    "actual": "",
+    "status": "open",
+    "priority": "low"
+  },
+  {
+    "id": 9,
+    "name": "Multiple formulations test",
+    "preconditions": "Testing 3 formulations (T1, T2, R) under same condition",
+    "steps": "Run design algorithm",
+    "expected": "Recommend parallel or nested design due to more than two treatments",
+    "actual": "",
+    "status": "open",
+    "priority": "medium"
+  },
+  {
+    "id": 10,
+    "name": "Food effect study needed",
+    "preconditions": "CV_intra=20%, fed_state_effect=true",
+    "steps": "Run design algorithm",
+    "expected": "Recommend separate fed and fasting studies (2×2 each) or replicate if variability high",
+    "actual": "",
+    "status": "open",
+    "priority": "medium"
+  },
+  {
+    "id": 11,
+    "name": "Edge: HVD with long t½",
+    "preconditions": "CV_intra=40%, half_life=48h, not NTI",
+    "steps": "Run design algorithm",
+    "expected": "Recommend replicate crossover with extended washout, or parallel if washout impractical:contentReference[oaicite:7]{index=7}:contentReference[oaicite:8]{index=8}",
+    "actual": "",
+    "status": "open",
+    "priority": "high"
+  },
+  {
+    "id": 12,
+    "name": "Edge: borderline variability",
+    "preconditions": "CV_intra=28%, half_life=10h",
+    "steps": "Run design algorithm",
+    "expected": "Standard 2×2 crossover (CV below 30% threshold)",
+    "actual": "",
+    "status": "open",
+    "priority": "low"
+  },
+  {
+    "id": 13,
+    "name": "Edge: moderate HVD",
+    "preconditions": "CV_intra=32%, half_life=5h",
+    "steps": "Run design algorithm",
+    "expected": "Replicate design (CV>30%)",
+    "actual": "",
+    "status": "open",
+    "priority": "medium"
+  },
+  {
+    "id": 14,
+    "name": "Partial replicate case",
+    "preconditions": "CV_intra=35%, partial replicate design scenario (2×2×3)",
+    "steps": "Run design algorithm",
+    "expected": "Full replicate recommended instead of partial due to bias in 3-period design:contentReference[oaicite:9]{index=9}",
+    "actual": "",
+    "status": "open",
+    "priority": "low"
+  },
+  {
+    "id": 15,
+    "name": "Multiple period / sequence conflict",
+    "preconditions": "CV_intra=20%, evaluating 2×4×4 vs 2×2×4",
+    "steps": "Run design algorithm",
+    "expected": "Prefer simpler 2×2×4 design unless specific reason for more periods",
+    "actual": "",
+    "status": "open",
+    "priority": "low"
+  }
+]

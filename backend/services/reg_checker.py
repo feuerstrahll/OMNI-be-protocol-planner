@@ -44,6 +44,7 @@ class RegChecker:
         cv_info: Optional[CVInfo] = None,
         validation_issues: Optional[List[ValidationIssue]] = None,
         nti: Optional[bool] = None,
+        protocol_condition: Optional[str] = None,
     ) -> RegCheckResponse:
         checks: List[RegCheckItem] = []
 
@@ -57,8 +58,10 @@ class RegChecker:
                 cv_info=cv_info,
                 validation_issues=validation_issues,
                 nti=nti,
+                protocol_condition=protocol_condition,
             )
             checks.extend(self._evaluate_generic_rules(context))
+            checks.extend(self._check_required_pk(pk_json))
         else:
             context = self._build_context(design, pk_json, schedule_days, cv_input, cv_info=cv_info)
             checks.extend(self._check_cv_design(context))
@@ -133,6 +136,7 @@ class RegChecker:
         cv_info: Optional[CVInfo],
         validation_issues: Optional[List[ValidationIssue]],
         nti: Optional[bool],
+        protocol_condition: Optional[str],
     ) -> Dict[str, object]:
         warnings = self._collect_warning_codes(pk_json, validation_issues or [])
         t_half = self._extract_pk_value(pk_json, "t1/2", ignore_ambiguous=True)
@@ -183,7 +187,7 @@ class RegChecker:
             "cv": {
                 "cvintra": {
                     "value": cv_ratio,
-                    "parameter": None,
+                    "parameter": getattr(cv_info, "parameter", None) if cv_info else None,
                     "source": cv_source,
                     "confirmed_by_human": bool(cv_confirmed),
                 },
@@ -200,6 +204,7 @@ class RegChecker:
             "study": {
                 "design": {"recommended": self._normalize_design_label(design)},
                 "fed_fasted": study_condition,
+                "protocol_condition": protocol_condition or None,
             },
             "schedule_days": schedule_days,
             "warnings": warnings,
@@ -399,6 +404,10 @@ class RegChecker:
             return value is not None
         if op == "not_exists":
             return value is None
+        if op == "is_null":
+            return value is None
+        if op == "is_not_null":
+            return value is not None
         if op == "truthy":
             return bool(value)
         if op == "falsy":
@@ -572,7 +581,7 @@ class RegChecker:
                 )
             )
 
-        if cv_info and cv_info.cv_source == "range":
+        if cv_info and cv_info.cv_source == "range" and not use_generic_rules:
             checks.append(
                 RegCheckItem(
                     rule_id="CV_RANGE_UNCERTAIN",
@@ -582,7 +591,7 @@ class RegChecker:
                 )
             )
 
-        if cv_info and not cv_info.confirmed_by_user:
+        if cv_info and not cv_info.confirmed_by_user and not use_generic_rules:
             checks.append(
                 RegCheckItem(
                     rule_id="CV_CONFIRM_NDET",

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -13,11 +14,18 @@ logger = logging.getLogger(__name__)
 
 
 class YandexLLMClient:
-    def __init__(self, api_key: Optional[str] = None, folder_id: Optional[str] = None, model: str = "yandexgpt-pro") -> None:
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        folder_id: Optional[str] = None,
+        model: str = "yandexgpt-pro",
+        max_retries: int = 2,
+    ) -> None:
         self.api_key = api_key or os.getenv("YANDEX_API_KEY")
         self.folder_id = folder_id or os.getenv("YANDEX_FOLDER_ID")
         self.model = model
         self.base_url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+        self.max_retries = max(0, int(max_retries))
 
     def extract_pk_from_text(self, text: str, inn: str) -> Dict[str, Any]:
         if not self.api_key or not self.folder_id:
@@ -71,7 +79,7 @@ class YandexLLMClient:
                 "x-folder-id": self.folder_id,
                 "Content-Type": "application/json",
             }
-            resp = requests.post(self.base_url, headers=headers, json=payload, timeout=15)
+            resp = self._post_with_retries(payload, headers)
             if resp.status_code != 200:
                 logger.warning("yandex_llm_http_error", status=resp.status_code, text=resp.text[:200])
                 return {}
@@ -89,3 +97,24 @@ class YandexLLMClient:
         except Exception as exc:
             logger.warning("yandex_llm_error", error=str(exc))
             return {}
+
+    def _post_with_retries(self, payload: Dict[str, Any], headers: Dict[str, str]) -> requests.Response:
+        retry_statuses = {429, 500, 502, 503, 504}
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = requests.post(self.base_url, headers=headers, json=payload, timeout=15)
+                if resp.status_code in retry_statuses:
+                    if attempt < self.max_retries:
+                        time.sleep(0.5 * (2**attempt))
+                        continue
+                return resp
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < self.max_retries:
+                    time.sleep(0.5 * (2**attempt))
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Yandex LLM request failed without exception.")
