@@ -1,0 +1,47 @@
+﻿# Open Questions Library
+
+This library provides standard text snippets and triggers for unresolved items.
+
+- HOSPITALIZATION_DURATION
+  Question: Confirm hospitalization duration, sampling duration, and follow-up duration (how many t1/2 to cover).
+  Trigger: Missing hospitalization_duration_days, sampling_duration_days, or follow_up_duration_days.
+
+- PHONE_FOLLOW_UP
+  Question: Is phone follow-up acceptable or recommended?
+  Trigger: Missing phone_follow_up_ok.
+
+- BLOOD_VOLUME
+  Question: Confirm blood volume constraints (total vs PK-only).
+  Trigger: Missing blood_volume_total_ml or blood_volume_pk_ml.
+
+- DEC85_REQUIRED_PK
+  Question: Provide missing PK parameters required by Decision 85.
+  Trigger: Missing required PK outputs (Cmax, AUC0-t, AUC0-inf, t1/2 or lambda_z).
+
+- DQI_RED
+  Question: Confirm sources / provide stronger BE/PK evidence.
+  Trigger: Data quality level is red.
+
+- CV_DERIVED_ASSUMPTIONS
+  Question: Confirm assumptions for CV derived from CI (90% CI, 2x2 crossover, log-scale, correctness of n/CI).
+  Trigger: CV source is derived from CI.
+
+- CV_RANGE_UNCERTAIN
+  Question: Provide measured CVintra if possible; risk-based N used.
+  Trigger: CV source is range/uncertain.
+
+- CV_CONFIRM_NDET
+  Question: Confirm CV to enable N_det calculation.
+  Trigger: CV not confirmed.
+
+- CVFROMCI_POWERTOST
+  Question: Install R/PowerTOST or provide CV manually.
+  Trigger: PowerTOST unavailable for CVfromCI.
+
+- FEEDING_CONDITION_CLARIFY
+  Question: Source contains both FED and FASTED results. Choose protocol condition (FED or FASTED) before using PK/CI for calculations.
+  Trigger: feeding_condition_conflict detected in extraction.
+
+- FEEDING_CONDITION_TAGGING
+  Question: Condition-specific tagging not available; manual confirmation required.
+  Trigger: protocol condition selected but values are ambiguous without matching tags.

@@ -1,86 +1,177 @@
-checks:
-  - id: CV_HIGH_DESIGN
-    type: cv_design
-    cv_threshold: 50
-    replicate_keywords:
-      - replicate
-      - scaled
-    message_ok: "Design aligns with CVintra risk profile."
-    message_risk: "High CVintra detected but design is not replicate/scaled."
-    message_missing_cv: "CVintra not available for regulatory assessment."
-    message_unconfirmed: "CVintra provided but not confirmed."
-    clarify_missing_cv: "Provide CVintra or justify variability assumptions."
-    clarify_unconfirmed: "Confirm CVintra value before finalizing design."
-    clarify_risk: "Consider replicate design or scaled BE approach."
-  - id: WASHOUT
-    type: washout
-    multiplier: 5
-    message_ok: "Washout duration appears adequate."
-    message_risk: "Washout may be shorter than 5x t1/2."
-    message_missing_schedule: "Washout duration not provided."
-    message_missing_half: "t1/2 not available to validate washout duration."
-    clarify_missing_schedule: "Provide washout duration to assess 5x t1/2 rule."
-    clarify_missing_half: "Provide t1/2 or justify washout duration."
+version: "1.0"
+engine: "reg-check"
+description: >
+  MVP регуляторных проверок для планирования BE/PK_BE.
+  Выход правил: decision (OK/RISK/CLARIFY), message, what_to_clarify[].
+  Дефолт: OK, если ни одно правило не сработало.
 
-required_pk:
-  decision_85:
-    id: DEC85_REQUIRED_PK
-    parameters:
-      - Cmax
-      - AUC0-t
-      - AUC0-inf
-      - t1/2
-      - lambda_z
-    message: "Missing required PK parameters (Decision 85)."
-    clarify_text: "Provide missing PK parameters required by Decision 85."
-    category: pk_required
-    priority: high
+# --- Assumed FullReport JSON paths (can be remapped in backend) ---
+# data_quality.score: 0..100
+# data_quality.level: "green"|"yellow"|"red"
+#
+# pk.auc.exists: bool
+# pk.cmax.exists: bool
+# pk.t12_hours: number (hours)
+# pk.auc.parameter_name: e.g. "AUC(0-t)"|"AUC(0-72h)"|"AUCtau" (optional)
+#
+# cv.cvintra.value: number (ratio, e.g. 0.30 == 30%)
+# cv.cvintra.parameter: "AUC"|"Cmax" (optional)
+# cv.cvintra.source: "reported"|"derived_from_ci"|"manual"|"variability_range"
+# cv.cvintra.confirmed_by_human: bool (mandatory checkbox gate for N_det)
+#
+# cv.derived_from_ci.ci90_low: number (ratio, e.g. 0.91)
+# cv.derived_from_ci.ci90_high: number (ratio, e.g. 1.15)
+# cv.derived_from_ci.n_total: integer
+# cv.derived_from_ci.design: string (e.g. "2x2", "2x2x3", "2x4x4") (optional)
+# cv.derived_from_ci.log_scale_assumed: bool (optional flag set by extractor)
+# cv.derived_from_ci.assumptions_confirmed_by_human: bool
+#
+# drug.narrow_therapeutic_index: bool
+#
+# study.design.recommended: "2x2"|"replicate"|"parallel" (optional)
+# study.fed_fasted: "fasted"|"fed"|"both"|"unknown" (optional)
+#
+# warnings: array of machine codes (e.g., "source_conflict", "unit_suspect", "missing_evidence")
 
-open_questions:
-  - id: HOSPITALIZATION_DURATION
-    category: schedule
-    question: "Confirm hospitalization duration, sampling duration, and follow-up duration (how many t1/2 to cover)."
-    priority: high
-    input_fields:
-      - hospitalization_duration_days
-      - sampling_duration_days
-      - follow_up_duration_days
-    clarify_message: "Provide hospitalization, sampling, and follow-up duration (t1/2 coverage)."
-  - id: PHONE_FOLLOW_UP
-    category: follow_up
-    question: "Is phone follow-up acceptable or recommended?"
-    priority: medium
-    input_fields:
-      - phone_follow_up_ok
-    clarify_message: "Confirm phone follow-up policy."
-  - id: BLOOD_VOLUME
-    category: blood_volume
-    question: "Confirm blood volume constraints (total vs PK-only)."
-    priority: medium
-    input_fields:
-      - blood_volume_total_ml
-      - blood_volume_pk_ml
-    clarify_message: "Provide blood volume limits (total and PK-only)."
+defaults:
+  decision: "OK"
+  priority: 1000
 
-question_meta:
-  CV_HIGH_DESIGN:
-    category: design
-    priority: medium
-  WASHOUT:
-    category: schedule
-    priority: medium
-  DEC85_REQUIRED_PK:
-    category: pk_required
-    priority: high
-  DQI_RED:
-    category: data_quality
-    priority: high
-  CV_DERIVED_ASSUMPTIONS:
-    category: cv
-    priority: high
-  CV_RANGE_UNCERTAIN:
-    category: cv
-    priority: medium
-  CV_CONFIRM_NDET:
-    category: cv
-    priority: high
+# Supported ops (suggested for backend):
+# exists, not_exists, eq, ne, gt, gte, lt, lte, in, not_in, contains, truthy, falsy
+
+aggregation:
+  overall_decision: "worst"   # OK < CLARIFY < RISK
+  include_fired_rules: true
+
+rules:
+
+  - id: "REG-001"
+    title: "Low data quality: deterministic planning is fragile"
+    decision: "CLARIFY"
+    priority: 10
+    tags: ["data_quality", "gating"]
+    when:
+      any:
+        - { field: "data_quality.level", op: "eq", value: "red" }
+        - { field: "data_quality.score", op: "lt", value: 55 }
+        - { field: "data_quality.score", op: "not_exists" }
+    message: >
+      Низкое качество входных данных (DQI): детерминированный расчёт N (N_det) и/или выбор дизайна могут быть нерелевантны.
+      Рекомендуется использовать N_risk и уточнить первичные источники/параметры.
+    what_to_clarify:
+      - "Подтвердите релевантность источников (human, BE/PK, сопоставимые условия fed/fasted)."
+      - "Подтвердите/уточните ключевые PK параметры (AUC, Cmax, t1/2 или признак long half-life)."
+      - "Подтвердите источник CVintra (reported/derived/manual/variability_range) и применимость к параметрам AUC/Cmax."
+      - "Если часть чисел без evidence — добавьте PMID/таблицу/фрагмент текста."
+
+  - id: "REG-002"
+    title: "Missing traceability for key numbers (evidence)"
+    decision: "CLARIFY"
+    priority: 20
+    tags: ["traceability", "evidence"]
+    when:
+      any:
+        - { field: "warnings", op: "contains", value: "missing_evidence" }
+        - { field: "warnings", op: "contains", value: "missing_source" }
+        - { field: "warnings", op: "contains", value: "unit_suspect" }
+    message: >
+      Для части ключевых данных отсутствует трассируемость (source+evidence) или есть сомнения по единицам.
+      Это повышает регуляторный риск и снижает доверие к расчётам.
+    what_to_clarify:
+      - "Для каждого ключевого числа (AUC/Cmax/t1/2/CV/CI/n) укажите PMID/URL и evidence (таблица/фрагмент/контекст)."
+      - "Проверьте и подтвердите единицы измерения (особенно AUC и Cmax) и корректность конверсии."
+      - "Если есть несколько источников — выберите primary и объясните выбор."
+
+  - id: "REG-003"
+    title: "CV derived from 90% CI (CVfromCI): assumptions must be explicit"
+    decision: "CLARIFY"
+    priority: 30
+    tags: ["cvintra", "cvfromci", "assumptions"]
+    when:
+      all:
+        - { field: "cv.cvintra.source", op: "eq", value: "derived_from_ci" }
+      any:
+        - { field: "cv.derived_from_ci.ci90_low", op: "not_exists" }
+        - { field: "cv.derived_from_ci.ci90_high", op: "not_exists" }
+        - { field: "cv.derived_from_ci.n_total", op: "not_exists" }
+        - { field: "cv.derived_from_ci.assumptions_confirmed_by_human", op: "falsy" }
+    message: >
+      CVintra получен из 90% CI для GMR (T/R) (ветка CVfromCI): требуется явное подтверждение допущений
+      (log-scale, корректность CI и n, применимость дизайна/df).
+    what_to_clarify:
+      - "Подтвердите, что CI — именно 90% CI для GMR (T/R) по AUC и/или Cmax (а не 95% и не для других метрик)."
+      - "Подтвердите, что оценка выполнена на log-scale (лог-трансформация PK параметров)."
+      - "Подтвердите корректность n (evaluable subjects) и дизайн, к которому относится CI (минимум 2×2, либо replicate/модель с robust df)."
+      - "Если CI получен из mixed model/replicate — отметьте это (может требовать robust df)."
+      - "Подтвердите соответствие условий (fasted/fed) и популяции планируемому исследованию."
+
+  - id: "REG-004"
+    title: "NTI: tightened acceptance interval likely required"
+    decision: "RISK"
+    priority: 40
+    tags: ["NTI", "acceptance_limits"]
+    when:
+      all:
+        - { field: "drug.narrow_therapeutic_index", op: "eq", value: true }
+    message: >
+      Препарат отмечен как NTI: для AUC требуется ужесточение acceptance interval до 90.00–111.11%.
+      Если Cmax критичен для безопасности/эффективности/мониторинга — те же пределы применяются и к Cmax.
+    what_to_clarify:
+      - "Подтвердите статус NTI (решение case-by-case на клинических основаниях)."
+      - "Уточните, нужно ли ужесточать Cmax (если он важен для safety/efficacy/monitoring)."
+      - "Проверьте, что в расчётах/протоколе отражены корректные acceptance limits для NTI."
+
+  - id: "REG-005"
+    title: "Highly variable (CVw > 30%): replicate design and (optional) widened Cmax limits"
+    decision: "RISK"
+    priority: 50
+    tags: ["HVD", "replicate", "scaling"]
+    when:
+      all:
+        - { field: "cv.cvintra.value", op: "gte", value: 0.30 }
+    message: >
+      Высокая внутрисубъектная вариабельность (CVw ≥ 30%): целесообразно рассмотреть replicate cross-over.
+      Для Cmax возможен widened acceptance range (максимум 69.84–143.19%) только при клиническом обосновании;
+      для AUC widening не применяется.
+    what_to_clarify:
+      - "Подтвердите, к какому параметру относится CVw (Cmax, AUC или оба) и в каких условиях (fasted/fed)."
+      - "Если рассматривается widening для Cmax: предоставьте клиническое обоснование 'clinically irrelevant' различий по Cmax."
+      - "Подтвердите, что исследование будет replicate design и что CVw(reference, Cmax) > 30% будет надёжно оценён (не из-за outliers)."
+      - "Убедитесь, что запрос widened interval будет prospectively specified в протоколе."
+      - "Напоминание: даже при widening, GMR должен оставаться в 80.00–125.00%."
+
+  - id: "REG-006"
+    title: "Long half-life / carry-over: washout, truncated AUC, possible parallel design"
+    decision: "CLARIFY"
+    priority: 60
+    tags: ["half_life", "carryover", "washout", "truncated_auc"]
+    when:
+      any:
+        - { field: "pk.t12_hours", op: "gte", value: 24 }
+        - { field: "warnings", op: "contains", value: "carryover_risk" }
+    message: >
+      Длинный период полувыведения (t1/2 ≥ 24ч) / риск carry-over: требуется обоснование washout и контроля pre-dose.
+      Для long half-life может быть нужен truncated AUC(0–72h); если кроссовер непрактичен — рассмотреть parallel design.
+    what_to_clarify:
+      - "Укажите washout (обычно ≥ 5 периодов полувыведения) и почему он достаточен."
+      - "Как будет контролироваться carry-over (pre-dose концентрации, критерии исключения/обращение с данными)."
+      - "Если t1/2 ≥ 24ч: подтвердите использование AUC(0–72h) как основной AUC-параметр или обоснуйте альтернативу."
+      - "Если washout чрезмерный/непрактичный — подтвердите необходимость parallel design и последствия для вариабельности/мощности."
+
+  - id: "REG-007"
+    title: "Conflicts between sources: requires manual resolution"
+    decision: "CLARIFY"
+    priority: 70
+    tags: ["source_conflict", "consistency"]
+    when:
+      any:
+        - { field: "warnings", op: "contains", value: "source_conflict" }
+        - { field: "warnings", op: "contains", value: "conflicting_values" }
+    message: >
+      Обнаружены конфликты между источниками по ключевым параметрам (PK/CV/CI/n/условия/дизайн).
+      Требуется ручная верификация, выбор primary источника и фиксация причин выбора.
+    what_to_clarify:
+      - "Какой источник/таблица является первичной базой для чисел (PMID/раздел/таблица)?"
+      - "Почему альтернативные значения отвергнуты (популяция/условия/дизайн/ошибка единиц/метод анализа)?"
+      - "Зафиксируйте выбранные значения и внесите заметку в audit trail (reason + evidence)."

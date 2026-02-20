@@ -24,6 +24,8 @@ class RegChecker:
             self.rules = yaml.safe_load(f) or {}
         self._templates = _load_open_question_templates("docs/OPEN_QUESTIONS_LIBRARY.md")
         self._question_meta = self._load_question_meta()
+        self._rules_list = self.rules.get("rules") or []
+        self._use_generic_rules = bool(self._rules_list)
 
     def run(
         self,
@@ -41,14 +43,28 @@ class RegChecker:
         data_quality: Optional[DataQuality] = None,
         cv_info: Optional[CVInfo] = None,
         validation_issues: Optional[List[ValidationIssue]] = None,
+        nti: Optional[bool] = None,
     ) -> RegCheckResponse:
         checks: List[RegCheckItem] = []
 
-        context = self._build_context(design, pk_json, schedule_days, cv_input, cv_info=cv_info)
-
-        checks.extend(self._check_cv_design(context))
-        checks.extend(self._check_washout(context))
-        checks.extend(self._check_required_pk(pk_json))
+        if self._use_generic_rules:
+            context = self._build_generic_context(
+                design,
+                pk_json,
+                schedule_days,
+                cv_input,
+                data_quality=data_quality,
+                cv_info=cv_info,
+                validation_issues=validation_issues,
+                nti=nti,
+            )
+            checks.extend(self._evaluate_generic_rules(context))
+        else:
+            context = self._build_context(design, pk_json, schedule_days, cv_input, cv_info=cv_info)
+            checks.extend(self._check_cv_design(context))
+            checks.extend(self._check_washout(context))
+            checks.extend(self._check_required_pk(pk_json))
+        checks.extend(self._check_feeding_conflict(pk_json))
         checks.extend(
             self._check_missing_inputs(
                 hospitalization_duration_days=hospitalization_duration_days,
@@ -60,7 +76,7 @@ class RegChecker:
             )
         )
 
-        checks.extend(self._dynamic_checks(data_quality, cv_info))
+        checks.extend(self._dynamic_checks(data_quality, cv_info, use_generic_rules=self._use_generic_rules))
 
         checks = _dedupe_checks(checks)
         val_issues = validation_issues or pk_json.validation_issues or []
@@ -68,6 +84,24 @@ class RegChecker:
         open_questions = _dedupe_open_questions(open_questions)
 
         return RegCheckResponse(checks=checks, open_questions=open_questions)
+
+    def _check_feeding_conflict(self, pk_json: PKExtractionResponse) -> List[RegCheckItem]:
+        if not pk_json.warnings or "feeding_condition_conflict" not in pk_json.warnings:
+            return []
+        return [
+            RegCheckItem(
+                rule_id="FEEDING_CONDITION_CLARIFY",
+                status="CLARIFY",
+                message=(
+                    "Source contains both FED and FASTED results. Choose protocol condition (FED or FASTED) "
+                    "before using PK/CI for calculations."
+                ),
+                what_to_clarify=[
+                    "Select protocol condition: fed/fasted",
+                    "Confirm which PK/CI values correspond to the chosen condition",
+                ],
+            )
+        ]
 
     def _build_context(
         self,
@@ -87,6 +121,108 @@ class RegChecker:
             "t_half": t_half,
             "schedule_days": schedule_days,
         }
+
+    def _build_generic_context(
+        self,
+        design: str,
+        pk_json: PKExtractionResponse,
+        schedule_days: Optional[float],
+        cv_input: Optional[CVInput],
+        *,
+        data_quality: Optional[DataQuality],
+        cv_info: Optional[CVInfo],
+        validation_issues: Optional[List[ValidationIssue]],
+        nti: Optional[bool],
+    ) -> Dict[str, object]:
+        warnings = self._collect_warning_codes(pk_json, validation_issues or [])
+        t_half = self._extract_pk_value(pk_json, "t1/2", ignore_ambiguous=True)
+        auc_name = self._first_metric_name(pk_json, "AUC")
+        cv_value, cv_confirmed = _resolve_cv_value(pk_json, cv_input, cv_info)
+        if cv_info:
+            cv_source = cv_info.cv_source or cv_info.source
+        elif cv_input:
+            cv_source = "manual"
+        else:
+            cv_source = None
+        if cv_source == "range":
+            cv_source = "variability_range"
+        cv_ratio = None
+        if cv_value is not None:
+            try:
+                cv_ratio = float(cv_value) / 100.0
+            except Exception:
+                cv_ratio = None
+
+        ci_candidate = self._select_ci_candidate(pk_json.ci_values)
+        ci_low = ci_high = None
+        ci_n = None
+        ci_design = None
+        ci_log = None
+        if ci_candidate is not None:
+            ci_low = self._ci_ratio(ci_candidate.ci_low, ci_candidate.ci_type)
+            ci_high = self._ci_ratio(ci_candidate.ci_high, ci_candidate.ci_type)
+            ci_n = ci_candidate.n
+            ci_design = ci_candidate.design_hint
+        if pk_json.design_hints and pk_json.design_hints.log_transform is not None:
+            ci_log = bool(pk_json.design_hints.log_transform)
+
+        study_condition = pk_json.study_condition
+        if pk_json.warnings and "feeding_condition_conflict" in pk_json.warnings:
+            study_condition = "both"
+
+        context = {
+            "data_quality": {
+                "score": data_quality.score if data_quality else None,
+                "level": data_quality.level if data_quality else None,
+            },
+            "pk": {
+                "auc": {"exists": self._has_pk(pk_json, "AUC"), "parameter_name": auc_name},
+                "cmax": {"exists": self._has_pk(pk_json, "Cmax")},
+                "t12_hours": t_half,
+            },
+            "cv": {
+                "cvintra": {
+                    "value": cv_ratio,
+                    "parameter": None,
+                    "source": cv_source,
+                    "confirmed_by_human": bool(cv_confirmed),
+                },
+                "derived_from_ci": {
+                    "ci90_low": ci_low,
+                    "ci90_high": ci_high,
+                    "n_total": ci_n,
+                    "design": ci_design,
+                    "log_scale_assumed": ci_log,
+                    "assumptions_confirmed_by_human": bool(cv_confirmed) if cv_source == "derived_from_ci" else None,
+                },
+            },
+            "drug": {"narrow_therapeutic_index": nti},
+            "study": {
+                "design": {"recommended": self._normalize_design_label(design)},
+                "fed_fasted": study_condition,
+            },
+            "schedule_days": schedule_days,
+            "warnings": warnings,
+        }
+        return context
+
+    def _evaluate_generic_rules(self, context: Dict[str, object]) -> List[RegCheckItem]:
+        checks: List[RegCheckItem] = []
+        defaults = self.rules.get("defaults") or {}
+        default_decision = defaults.get("decision", "OK")
+        for rule in self._rules_list:
+            when = rule.get("when") or {}
+            if when and not self._eval_condition(when, context):
+                continue
+            checks.append(
+                RegCheckItem(
+                    rule_id=rule.get("id"),
+                    status=rule.get("decision") or default_decision,
+                    message=rule.get("message") or "Regulatory check fired.",
+                    what_to_clarify=rule.get("what_to_clarify") or [],
+                )
+            )
+        return checks
 
     def _check_cv_design(self, context: Dict[str, object]) -> List[RegCheckItem]:
         cfg = _find_check(self.rules.get("checks", []), "CV_HIGH_DESIGN")
@@ -137,6 +273,178 @@ class RegChecker:
                 message=cfg.get("message_ok", "Design aligns with CVintra risk profile."),
             )
         ]
+
+    def _collect_warning_codes(
+        self,
+        pk_json: PKExtractionResponse,
+        validation_issues: List[ValidationIssue],
+    ) -> List[str]:
+        warnings: List[str] = []
+        warnings.extend(pk_json.warnings or [])
+
+        numeric_items = list(pk_json.pk_values) + list(pk_json.ci_values)
+        missing_evidence = False
+        missing_source = False
+        for item in numeric_items:
+            value = getattr(item, "value", None)
+            if value is None and hasattr(item, "ci_low"):
+                value = getattr(item, "ci_low", None)
+            if value is None:
+                continue
+            evidence = getattr(item, "evidence", None) or []
+            if not evidence:
+                missing_evidence = True
+                continue
+            has_source = any(
+                (ev.pmid_or_url or ev.pmid or ev.url or ev.source_id)
+                for ev in evidence
+                if ev is not None
+            )
+            if not has_source:
+                missing_source = True
+
+        if missing_evidence:
+            warnings.append("missing_evidence")
+        if missing_source:
+            warnings.append("missing_source")
+
+        for pk in pk_json.pk_values:
+            for warn in pk.warnings or []:
+                if warn == "missing_unit":
+                    warnings.append("unit_missing")
+                if warn == "unit_not_allowed":
+                    warnings.append("unit_suspect")
+                if warn == "unit_normalization_failed":
+                    warnings.append("suspicious_conversion")
+                if "conflict_detected" in warn:
+                    warnings.append("conflicting_values")
+
+        for issue in validation_issues:
+            if "conflict" in issue.message.lower():
+                warnings.append("conflicting_values")
+
+        return list(dict.fromkeys(warnings))
+
+    @staticmethod
+    def _first_metric_name(pk_json: PKExtractionResponse, prefix: str) -> Optional[str]:
+        for pk in pk_json.pk_values:
+            if pk.name and pk.name.upper().startswith(prefix.upper()):
+                return pk.name
+        return None
+
+    @staticmethod
+    def _has_pk(pk_json: PKExtractionResponse, name: str) -> bool:
+        for pk in pk_json.pk_values:
+            if pk.name == name or (name == "AUC" and pk.name.upper().startswith("AUC")):
+                if pk.value is not None and not getattr(pk, "ambiguous_condition", False):
+                    return True
+        return False
+
+    @staticmethod
+    def _extract_pk_value(
+        pk_json: PKExtractionResponse, name: str, *, ignore_ambiguous: bool = False
+    ) -> Optional[float]:
+        for pk in pk_json.pk_values:
+            if pk.name == name and pk.value is not None:
+                if ignore_ambiguous and getattr(pk, "ambiguous_condition", False):
+                    continue
+                return pk.value
+        return None
+
+    @staticmethod
+    def _select_ci_candidate(ci_values: List) -> Optional[object]:
+        for ci in ci_values:
+            if getattr(ci, "ambiguous_condition", False):
+                continue
+            return ci
+        return None
+
+    @staticmethod
+    def _ci_ratio(value: Optional[float], ci_type: str) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            val = float(value)
+        except Exception:
+            return None
+        if ci_type == "percent" or val > 2.0:
+            return val / 100.0
+        return val
+
+    @staticmethod
+    def _normalize_design_label(design: str) -> Optional[str]:
+        text = (design or "").lower()
+        if "replicate" in text:
+            return "replicate"
+        if "parallel" in text:
+            return "parallel"
+        if "2x2" in text or "2?2" in text:
+            return "2x2"
+        return design or None
+
+    def _eval_condition(self, cond: dict, context: Dict[str, object]) -> bool:
+        if not cond:
+            return True
+        if "all" in cond:
+            return all(self._eval_condition(item, context) for item in cond.get("all") or [])
+        if "any" in cond:
+            return any(self._eval_condition(item, context) for item in cond.get("any") or [])
+
+        field = cond.get("field")
+        op = cond.get("op")
+        target = cond.get("value")
+        value = self._get_path(context, field) if field else None
+
+        if op == "exists":
+            return value is not None
+        if op == "not_exists":
+            return value is None
+        if op == "truthy":
+            return bool(value)
+        if op == "falsy":
+            return not bool(value)
+        if op == "contains":
+            if isinstance(value, list):
+                return target in value
+            if isinstance(value, str):
+                return str(target) in value
+            return False
+        if op == "in":
+            return value in (target or [])
+        if op == "not_in":
+            return value not in (target or [])
+        if value is None:
+            return False
+        if op == "eq":
+            return value == target
+        if op == "ne":
+            return value != target
+        try:
+            val_num = float(value)
+            tgt_num = float(target)
+        except Exception:
+            return False
+        if op == "gt":
+            return val_num > tgt_num
+        if op == "gte":
+            return val_num >= tgt_num
+        if op == "lt":
+            return val_num < tgt_num
+        if op == "lte":
+            return val_num <= tgt_num
+        return False
+
+    @staticmethod
+    def _get_path(data: Dict[str, object], path: Optional[str]) -> Optional[object]:
+        if not path:
+            return None
+        current: object = data
+        for part in path.split("."):
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        return current
 
     def _check_washout(self, context: Dict[str, object]) -> List[RegCheckItem]:
         cfg = _find_check(self.rules.get("checks", []), "WASHOUT")
@@ -238,9 +546,11 @@ class RegChecker:
         self,
         data_quality: Optional[DataQuality],
         cv_info: Optional[CVInfo],
+        *,
+        use_generic_rules: bool = False,
     ) -> List[RegCheckItem]:
         checks: List[RegCheckItem] = []
-        if data_quality and data_quality.level == "red":
+        if data_quality and data_quality.level == "red" and not use_generic_rules:
             checks.append(
                 RegCheckItem(
                     rule_id="DQI_RED",
@@ -250,7 +560,7 @@ class RegChecker:
                 )
             )
 
-        if cv_info and cv_info.cv_source == "derived_from_ci":
+        if cv_info and cv_info.cv_source == "derived_from_ci" and not use_generic_rules:
             checks.append(
                 RegCheckItem(
                     rule_id="CV_DERIVED_ASSUMPTIONS",
@@ -400,10 +710,20 @@ def _load_open_question_templates(path: str) -> Dict[str, str]:
         if line.startswith("- "):
             current_id = line[2:].strip()
             continue
+        match = re.search(r"(OQ-[0-9]+)", line)
+        if line.startswith("###") and match:
+            current_id = match.group(1)
+            continue
         if current_id and line.lower().startswith("question:"):
             question = line.split(":", 1)[1].strip().strip('"')
             templates[current_id] = question
+            continue
+        if current_id and "question" in line.lower() and ":" in line:
+            if line.lower().startswith("- **question**"):
+                question = line.split(":", 1)[1].strip().strip('"')
+                templates[current_id] = question
     return templates
+
 
 
 def _dedupe_checks(checks: List[RegCheckItem]) -> List[RegCheckItem]:

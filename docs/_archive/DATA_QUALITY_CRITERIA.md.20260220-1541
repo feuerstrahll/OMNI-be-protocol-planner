@@ -1,0 +1,23 @@
+# Data Quality Index (DQI) Criteria
+
+This MVP uses a weighted component score (0–100). Components are normalized to 0..1 and combined
+with weights. Traceability is intentionally the highest weight.
+
+## Components
+- completeness: required PK set + CV/CI/n + study conditions
+- traceability: fraction of numeric values with evidence excerpts
+- plausibility: unit/range validation penalties
+- consistency: conflict penalties across sources
+- source_quality: species + source-type signals
+
+## Weights
+- traceability: 0.35
+- completeness: 0.20
+- plausibility: 0.20
+- consistency: 0.15
+- source_quality: 0.10
+
+## Thresholds
+- green: 80+
+- yellow: 60–79
+- red: <60

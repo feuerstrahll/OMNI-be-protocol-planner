@@ -16,6 +16,8 @@ class Evidence(BaseModel):
     location: Optional[str] = Field(None, description="abstract/table/section if available")
     confidence: Optional[str] = Field(None, description="Optional confidence label")
     context_tags: Optional[Dict[str, bool]] = Field(None, description="Context tags extracted from evidence snippet")
+    offset_start: Optional[int] = Field(None, description="Optional start offset of snippet in source text")
+    offset_end: Optional[int] = Field(None, description="Optional end offset of snippet in source text")
 
     # Legacy fields to keep compatibility with existing services.
     source_type: Optional[Literal["PMID", "URL"]] = None
@@ -76,6 +78,26 @@ class SourceCandidate(BaseModel):
     url: Optional[str] = None
 
 
+StudyCondition = Literal["fed", "fasted", "unknown"]
+
+
+class MealDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    calories_kcal: Optional[int] = None
+    fat_g: Optional[int] = None
+    timing_min: Optional[int] = None
+    note: Optional[str] = None
+
+
+class DesignHints(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_crossover_2x2: Optional[bool] = None
+    log_transform: Optional[bool] = None
+    n: Optional[int] = None
+
+
 class SearchSourcesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -106,6 +128,7 @@ class PKValue(BaseModel):
         description="Extraction/validation warnings (e.g., llm_extracted_requires_human_review)",
     )
     conflict_sources: Optional[List[str]] = None
+    ambiguous_condition: Optional[bool] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -151,6 +174,9 @@ class PKExtractionResponse(BaseModel):
     inn: str
     pk_values: List[PKValue]
     ci_values: List[CIValue] = Field(default_factory=list)
+    study_condition: StudyCondition = "unknown"
+    meal_details: Optional[MealDetails] = None
+    design_hints: Optional[DesignHints] = None
     warnings: List[str] = Field(default_factory=list)
     missing: List[str] = Field(default_factory=list)
     validation_issues: List[ValidationIssue] = Field(default_factory=list)
@@ -162,12 +188,14 @@ class CIValue(BaseModel):
     param: Literal["AUC", "Cmax"]
     ci_low: float
     ci_high: float
+    ci_type: Literal["ratio", "percent"] = "ratio"
     confidence_level: float = 0.90
     n: Optional[int] = None
     design_hint: Optional[str] = None
     gmr: Optional[float] = None
     evidence: List[Evidence] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+    ambiguous_condition: Optional[bool] = None
 
 
 class CVInfo(BaseModel):
@@ -301,9 +329,13 @@ class FullReport(BaseModel):
     protocol_status: Optional[str] = None
     replacement_subjects: Optional[bool] = None
     visit_day_numbering: Optional[str] = None
+    protocol_condition: Optional[Literal["fed", "fasted"]] = None
     sources: List[SourceCandidate] = Field(default_factory=list)
     pk_values: List[PKValue] = Field(default_factory=list)
     ci_values: List[CIValue] = Field(default_factory=list)
+    study_condition: StudyCondition = "unknown"
+    meal_details: Optional[MealDetails] = None
+    design_hints: Optional[DesignHints] = None
     cv_info: CVInfo
     data_quality: DataQuality
     design: Optional[DesignDecision] = None
@@ -428,6 +460,7 @@ class RegCheckRequest(BaseModel):
     pk_json: PKExtractionResponse
     schedule_days: Optional[float] = None
     cv_input: Optional[CVInput] = None
+    nti: Optional[bool] = None
     hospitalization_duration_days: Optional[float] = None
     sampling_duration_days: Optional[float] = None
     follow_up_duration_days: Optional[float] = None
@@ -476,6 +509,7 @@ class RunPipelineRequest(BaseModel):
     protocol_id: Optional[str] = None
     replacement_subjects: bool = False
     visit_day_numbering: str = "continuous across periods"
+    protocol_condition: Optional[Literal["fed", "fasted"]] = None
     nti: Optional[bool] = None
     schedule_days: Optional[float] = None
     hospitalization_duration_days: Optional[float] = None

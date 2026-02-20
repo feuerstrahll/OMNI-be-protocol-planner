@@ -16,42 +16,47 @@ class VariabilityModel:
         drivers: List[str] = []
         warnings: List[str] = []
 
-        base_low, base_high = self._base_range(data.bcs_class)
-        drivers.append(f"Base range from BCS class: {data.bcs_class or 'unknown'}")
+        if "baseline_CV_range" in self.rules:
+            base_low, base_high = self._baseline_range()
+            drivers.append("Base range from baseline_CV_range")
+            low, high = base_low, base_high
+            low, high = self._apply_biologist_drivers(data, low, high, drivers)
+        else:
+            base_low, base_high = self._base_range(data.bcs_class)
+            drivers.append(f"Base range from BCS class: {data.bcs_class or 'unknown'}")
+            low, high = base_low, base_high
 
-        low, high = base_low, base_high
+            # Legacy rule-based adjustments from known drivers.
+            if data.logp is not None:
+                if data.logp >= 4:
+                    low, high = low + 10, high + 15
+                    drivers.append("High logP (>=4) increases variability")
+                elif data.logp >= 3:
+                    low, high = low + 5, high + 10
+                    drivers.append("Moderate logP (>=3) increases variability")
 
-        # Rule-based adjustments from known drivers.
-        if data.logp is not None:
-            if data.logp >= 4:
-                low, high = low + 10, high + 15
-                drivers.append("High logP (>=4) increases variability")
-            elif data.logp >= 3:
+            if data.t_half is not None and data.t_half >= 24:
                 low, high = low + 5, high + 10
-                drivers.append("Moderate logP (>=3) increases variability")
+                drivers.append("Long half-life (>=24 h) increases variability")
 
-        if data.t_half is not None and data.t_half >= 24:
-            low, high = low + 5, high + 10
-            drivers.append("Long half-life (>=24 h) increases variability")
+            if data.first_pass:
+                if data.first_pass == "high":
+                    low, high = low + 10, high + 15
+                    drivers.append("High first-pass effect increases variability")
+                elif data.first_pass == "medium":
+                    low, high = low + 5, high + 8
+                    drivers.append("Medium first-pass effect increases variability")
 
-        if data.first_pass:
-            if data.first_pass == "high":
-                low, high = low + 10, high + 15
-                drivers.append("High first-pass effect increases variability")
-            elif data.first_pass == "medium":
-                low, high = low + 5, high + 8
-                drivers.append("Medium first-pass effect increases variability")
+            if data.cyp_involvement:
+                if data.cyp_involvement == "high":
+                    low, high = low + 10, high + 15
+                    drivers.append("High CYP involvement increases variability")
+                elif data.cyp_involvement == "medium":
+                    low, high = low + 5, high + 8
+                    drivers.append("Medium CYP involvement increases variability")
 
-        if data.cyp_involvement:
-            if data.cyp_involvement == "high":
-                low, high = low + 10, high + 15
-                drivers.append("High CYP involvement increases variability")
-            elif data.cyp_involvement == "medium":
-                low, high = low + 5, high + 8
-                drivers.append("Medium CYP involvement increases variability")
-
-        if data.nti:
-            drivers.append("NTI flag present; consider conservative range")
+            if data.nti:
+                drivers.append("NTI flag present; consider conservative range")
 
         low = max(15, min(low, 80))
         high = max(low + 5, min(high, 90))
@@ -88,6 +93,45 @@ class VariabilityModel:
             if str(bcs_class) in mapping:
                 return tuple(mapping[str(bcs_class)])
         return tuple(base.get("default", [30, 50]))
+
+    def _baseline_range(self) -> Tuple[int, int]:
+        baseline = self.rules.get("baseline_CV_range") or [30, 50]
+        if isinstance(baseline, list) and len(baseline) >= 2:
+            return int(baseline[0]), int(baseline[1])
+        return 30, 50
+
+    def _apply_biologist_drivers(
+        self,
+        data: VariabilityInput,
+        low: int,
+        high: int,
+        drivers: List[str],
+    ) -> Tuple[int, int]:
+        cfg = self.rules.get("drivers") or {}
+
+        def _apply(driver_key: str, condition: bool) -> Tuple[int, int]:
+            nonlocal low, high
+            if not condition or driver_key not in cfg:
+                return low, high
+            add = cfg.get(driver_key, {}).get("add_range") or [0, 0]
+            if isinstance(add, list) and len(add) >= 2:
+                low += float(add[0])
+                high += float(add[1])
+            mech = cfg.get(driver_key, {}).get("mechanism")
+            if mech:
+                drivers.append(mech)
+            return low, high
+
+        _apply("BCS_class_II_or_IV", data.bcs_class in (2, 4))
+        _apply("strong_first_pass_metabolism", data.first_pass == "high")
+        _apply("CYP_polymorphic_metabolism", data.cyp_involvement == "high")
+        _apply("food_effect_present", bool(data.pk_json and data.pk_json.study_condition == "fed"))
+        _apply("modified_release", False)
+
+        if data.nti:
+            drivers.append("NTI flag present; consider conservative range")
+
+        return low, high
 
     @staticmethod
     def _confidence(data: VariabilityInput) -> str:

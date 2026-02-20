@@ -16,8 +16,17 @@ class PKValidator:
             "AUC0-inf": "AUC",
             "AUC_inf": "AUC",
             "AUC_last": "AUC",
+            "t1/2": "t_half",
+            "CVintra": "CV",
         }
-        self.normalization = self._build_normalization()
+        if "metrics" in self.rules:
+            self.metric_rules = self.rules.get("metrics", {})
+            self.normalization = self._build_normalization()
+            self.warning_rules = []
+        else:
+            self.metric_rules = self._build_metric_rules_from_new(self.rules)
+            self.normalization = self._build_normalization_from_rules(self.rules)
+            self.warning_rules = self.rules.get("warnings") or []
 
     def validate(self, pk_values: List[PKValue]) -> List[ValidationIssue]:
         issues, _ = self.validate_with_warnings(pk_values)
@@ -26,11 +35,11 @@ class PKValidator:
     def validate_with_warnings(self, pk_values: List[PKValue]) -> Tuple[List[ValidationIssue], List[str]]:
         issues: List[ValidationIssue] = []
         global_warnings: List[str] = []
-        metric_rules: Dict[str, Dict] = self.rules.get("metrics", {})
+        metric_rules: Dict[str, Dict] = self.metric_rules
 
         for pk in pk_values:
             pk.warnings = pk.warnings or []
-            rules = metric_rules.get(pk.name, {})
+            rules = metric_rules.get(self._resolve_metric_name(pk.name), {})
             unit_allowed = rules.get("units", [])
             min_val = rules.get("min", None)
             max_val = rules.get("max", None)
@@ -108,6 +117,8 @@ class PKValidator:
                 )
                 if "out_of_range" not in pk.warnings:
                     pk.warnings.append("out_of_range")
+
+            self._apply_warning_rules(pk)
 
         self._detect_conflicts(pk_values, issues, global_warnings)
         return issues, global_warnings
@@ -227,3 +238,61 @@ class PKValidator:
                 },
             },
         }
+
+    def _build_metric_rules_from_new(self, rules: Dict) -> Dict[str, Dict]:
+        metric_rules: Dict[str, Dict] = {}
+        units = rules.get("units") or {}
+        ranges = rules.get("ranges") or {}
+        for metric, unit_list in units.items():
+            metric_rules.setdefault(metric, {})["units"] = unit_list
+        for metric, rng in ranges.items():
+            metric_rules.setdefault(metric, {})["min"] = rng.get("min")
+            metric_rules.setdefault(metric, {})["max"] = rng.get("max")
+        return metric_rules
+
+    def _build_normalization_from_rules(self, rules: Dict) -> Dict[str, Dict[str, Dict[str, float] | str]]:
+        units = rules.get("units") or {}
+        conversions = rules.get("conversions") or {}
+        normalization: Dict[str, Dict[str, Dict[str, float] | str]] = {}
+        for metric, unit_list in units.items():
+            if not unit_list:
+                continue
+            canonical_unit = unit_list[0]
+            canonical_key = self._canonical_unit(canonical_unit)
+            factors = {canonical_key: 1.0}
+            for conv_key, factor in conversions.items():
+                if "_to_" not in conv_key:
+                    continue
+                from_unit, to_unit = conv_key.split("_to_", 1)
+                if self._canonical_unit(to_unit) == canonical_key:
+                    factors[self._canonical_unit(from_unit)] = float(factor)
+            normalization[metric] = {
+                "unit": canonical_unit,
+                "factors": factors,
+            }
+        return normalization
+
+    def _resolve_metric_name(self, name: str) -> str:
+        if name in self.metric_rules:
+            return name
+        alias = self.metric_aliases.get(name)
+        return alias if alias in self.metric_rules else name
+
+    def _apply_warning_rules(self, pk: PKValue) -> None:
+        if not self.warning_rules:
+            return
+        for rule in self.warning_rules:
+            rule_text = str(rule)
+            if rule_text.startswith("t_half") and pk.name in ("t1/2", "t_half") and pk.value is not None:
+                if pk.value > 200:
+                    self._add_warning(pk, "t_half_gt_200h")
+            if rule_text.startswith("CV") and pk.name == "CVintra" and pk.value is not None:
+                if pk.value > 60:
+                    self._add_warning(pk, "cv_gt_60")
+
+    @staticmethod
+    def _add_warning(pk: PKValue, warning: str) -> None:
+        if pk.warnings is None:
+            pk.warnings = []
+        if warning not in pk.warnings:
+            pk.warnings.append(warning)

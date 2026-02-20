@@ -1,0 +1,41 @@
+﻿metrics:
+  Cmax:
+    units: ["ng/mL", "mg/L", "µg/L", "ug/L", "ng/L", "mg/mL", "µg/mL", "ug/mL"]
+    min: 0.01
+    max: 1000000
+  AUC:
+    units: ["ng*h/mL", "ng·h/mL", "mg*h/L", "µg*h/L", "ug*h/L", "ng*hr/mL"]
+    min: 0.01
+    max: 10000000
+  AUC0-inf:
+    units: ["ng*h/mL", "ng·h/mL", "mg*h/L", "µg*h/L", "ug*h/L", "ng*hr/mL"]
+    min: 0.01
+    max: 10000000
+  AUC0-t:
+    units: ["ng*h/mL", "ng·h/mL", "mg*h/L", "µg*h/L", "ug*h/L", "ng*hr/mL"]
+    min: 0.01
+    max: 10000000
+  AUC_inf:
+    units: ["ng*h/mL", "ng·h/mL", "mg*h/L", "µg*h/L", "ug*h/L", "ng*hr/mL"]
+    min: 0.01
+    max: 10000000
+  AUC_last:
+    units: ["ng*h/mL", "ng·h/mL", "mg*h/L", "µg*h/L", "ug*h/L", "ng*hr/mL"]
+    min: 0.01
+    max: 10000000
+  t1/2:
+    units: ["h", "hr", "hours"]
+    min: 0.1
+    max: 240
+  Tmax:
+    units: ["h", "hr", "hours", "min"]
+    min: 0.05
+    max: 48
+  CVintra:
+    units: ["%"]
+    min: 5
+    max: 200
+  lambda_z:
+    units: ["1/h", "h^-1", "hr^-1"]
+    min: 0.001
+    max: 10

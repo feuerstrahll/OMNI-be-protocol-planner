@@ -70,8 +70,10 @@ def compute_data_quality(
     if criteria["todo"]:
         reasons.append("TODO: Data quality criteria not defined; using defaults.")
 
-    allow_n_det = level in ("green", "yellow") and cv_info.confirmed_by_user
-    prefer_n_risk = level == "red" or not cv_info.confirmed_by_user
+    cv_source = cv_info.cv_source or cv_info.source or "unknown"
+    is_range = cv_source in ("range", "variability_range")
+    allow_n_det = level in ("green", "yellow") and cv_info.confirmed_by_user and not is_range
+    prefer_n_risk = level == "red" or is_range or not cv_info.confirmed_by_user
 
     return DataQuality(
         score=score,
@@ -252,14 +254,14 @@ def _default_criteria(todo: bool) -> Dict[str, object]:
         "todo": todo,
         "weights": {
             "completeness": 0.25,
-            "traceability": 0.2,
+            "traceability": 0.25,
             "plausibility": 0.2,
-            "consistency": 0.15,
-            "source_quality": 0.2,
+            "consistency": 0.2,
+            "source_quality": 0.1,
         },
         "thresholds": {
             "green": 80,
-            "yellow": 60,
+            "yellow": 55,
         },
     }
 
@@ -283,11 +285,13 @@ def _score_level(score: int, thresholds: Dict[str, int]) -> str:
     return "red"
 
 
-def _dedupe_reasons(reasons: List[str]) -> List[str]:
+def _dedupe_reasons(reasons: List[str], max_items: int = 5) -> List[str]:
     seen = set()
     out: List[str] = []
     for reason in reasons:
         if reason not in seen:
             out.append(reason)
             seen.add(reason)
+        if len(out) >= max_items:
+            break
     return out

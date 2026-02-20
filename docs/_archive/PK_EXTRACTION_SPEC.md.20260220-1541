@@ -1,0 +1,53 @@
+# PK Extraction Spec (MVP)
+
+## Scope
+- Extract PK metrics from PubMed/PMC abstracts (regex first)
+- Optional LLM augmentation (when configured) with strict JSON output
+- Every numeric value must include evidence (PMID/URL + snippet)
+
+## PK Values
+Output as `pk_values[]` objects:
+- `name`: Cmax, AUC0-t, AUC0-inf, t1/2 (or lambda_z), Tmax, CVintra, etc.
+- `value`: numeric
+- `unit`: required when available
+- `evidence[]`: list of Evidence objects
+- `warnings[]`: e.g., missing_unit, conflict_detected, llm_extracted_requires_human_review
+
+## CI Values
+Output as `ci_values[]` objects:
+- `param`: AUC or Cmax
+- `ci_low`, `ci_high`
+- `ci_type`: `ratio` (default) or `percent`
+- `confidence_level`: 0.90 unless explicitly different
+- `n` (if stated near CI/GMR)
+- `gmr` (optional)
+- `design_hint` (optional)
+- `evidence[]`
+
+## Study Context
+Top-level contextual fields:
+- `study_condition`: `fed` | `fasted` | `unknown`
+- `meal_details` (optional):
+  - `calories_kcal`
+  - `fat_g`
+  - `timing_min`
+  - `note`
+- `design_hints` (optional):
+  - `is_crossover_2x2`
+  - `log_transform`
+  - `n`
+
+If `study_condition` is `fed` and `meal_details` is empty, add warning:
+`clarify_meal_composition`.
+
+## Evidence Format
+Each numeric value must include at least one Evidence item:
+- `pmid_or_url` (PMID or URL)
+- `excerpt` (<=300 chars)
+- `location` (e.g., abstract/table/section)
+- Optional: `offset_start`, `offset_end`
+
+## Hybrid Extraction Strategy
+1. Regex extraction runs first.
+2. LLM extraction runs second if configured (LLM_PROVIDER + LLM_API_KEY etc).
+3. Conflicts keep both values and add warnings; no hard failures.

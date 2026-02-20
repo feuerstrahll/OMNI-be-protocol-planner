@@ -1,2 +1,6 @@
-﻿id,pmid_or_url,metric,value,unit,context_snippet
-TODO,TODO,TODO,TODO,TODO,TODO
+PMID,expected_Cmax,expected_AUC,expected_t12,expected_CV,CI_low,CI_high,n,notes
+12345678,245,1850,9.8,34,0.89,1.07,24,explicit_CV; design=2x2_crossover
+23456789,310,2100,12.1,,0.85,1.12,28,CV_from_CI; design=2x2_crossover
+34567890,120,980,6.4,,0.92,1.08,36,no_CV_variability_layer; design=parallel
+45678901,500,4500,24.5,48,0.80,1.25,40,HVD; design=replicate
+56789012,150,1200,4.2,22,0.95,1.05,18,low_variability; design=2x2_crossover

@@ -30,12 +30,15 @@ from backend.schemas import (
     CVInfo,
     DesignDecision,
     NumericValue,
+    OpenQuestion,
     SampleSizeDet,
+    ValidationIssue,
 )
 from backend.services.cv_gate import select_cv_info
 from backend.services.data_quality import compute_data_quality
 from backend.services.design_engine import DesignEngine
 from backend.services.docx_builder import DocxRenderError, build_docx
+from backend.services.llm_pk_extractor import LLMDisabled, LLMPKExtractor
 from backend.services.pk_extractor import PKExtractor
 from backend.services.pmc_fetcher import fetch_pmc_sections
 from backend.services.powertost_runner import health as powertost_health
@@ -61,9 +64,17 @@ if os.getenv("YANDEX_API_KEY") and os.getenv("YANDEX_FOLDER_ID"):
         _llm = YandexLLMClient()
     except Exception as exc:
         logger.warning("yandex_llm_init_failed", error=str(exc))
+_llm_pk = None
+try:
+    _llm_pk = LLMPKExtractor()
+except LLMDisabled:
+    _llm_pk = None
+except Exception as exc:
+    logger.warning("llm_pk_init_failed", error=str(exc))
 pk_extractor = PKExtractor(
     llm_client=_llm,
     pmc_fetcher=fetch_pmc_sections if _llm else None,
+    llm_extractor=_llm_pk,
 )
 validator = PKValidator("backend/rules/validation_rules.yaml")
 design_engine = DesignEngine("backend/rules/design_rules.yaml")
@@ -94,9 +105,20 @@ def extract_pk(req: PKExtractionRequest) -> PKExtractionResponse:
     if not abstracts:
         warnings.append("No abstracts returned from NCBI EFetch.")
 
-    pk_values, ci_values, missing = pk_extractor.extract(abstracts)
+    pk_values, ci_values, missing = pk_extractor.extract(abstracts, inn=req.inn)
+    context = getattr(pk_extractor, "last_context", {}) or {}
+    extractor_warnings = getattr(pk_extractor, "last_warnings", []) or []
+    warnings.extend(extractor_warnings)
     validation_issues, validation_warnings = validator.validate_with_warnings(pk_values)
     warnings.extend(validation_warnings)
+    if "clarify_meal_composition" in extractor_warnings:
+        validation_issues.append(
+            ValidationIssue(
+                metric="study_condition",
+                severity="WARN",
+                message="Fed study detected but meal composition details are missing.",
+            )
+        )
 
     if not pk_values:
         warnings.append("No PK values extracted from abstracts. Consider manual input.")
@@ -105,6 +127,9 @@ def extract_pk(req: PKExtractionRequest) -> PKExtractionResponse:
         inn=req.inn,
         pk_values=pk_values,
         ci_values=ci_values,
+        study_condition=context.get("study_condition", "unknown"),
+        meal_details=context.get("meal_details"),
+        design_hints=context.get("design_hints"),
         warnings=warnings,
         missing=missing,
         validation_issues=validation_issues,
@@ -113,7 +138,18 @@ def extract_pk(req: PKExtractionRequest) -> PKExtractionResponse:
 
 @router.post("/select_design", response_model=DesignResponse)
 def select_design(req: DesignRequest) -> DesignResponse:
-    return design_engine.select_design(req.pk_json, req.cv_input, req.nti)
+    pk_values_calc, ci_values_calc, _ = _filter_pk_ci_for_calculation(
+        req.pk_json.pk_values,
+        req.pk_json.ci_values,
+        None,
+    )
+    pk_json_calc = req.pk_json.model_copy(
+        update={
+            "pk_values": pk_values_calc,
+            "ci_values": ci_values_calc,
+        }
+    )
+    return design_engine.select_design(pk_json_calc, req.cv_input, req.nti)
 
 
 @router.post("/calc_sample_size", response_model=SampleSizeResponse)
@@ -143,6 +179,7 @@ def reg_check(req: RegCheckRequest) -> RegCheckResponse:
         req.pk_json,
         req.schedule_days,
         req.cv_input,
+        nti=req.nti,
         hospitalization_duration_days=req.hospitalization_duration_days,
         sampling_duration_days=req.sampling_duration_days,
         follow_up_duration_days=req.follow_up_duration_days,
@@ -190,13 +227,25 @@ def run_pipeline(req: RunPipelineRequest) -> FullReport:
     ci_values: list = []
     missing: list[str] = []
     validation_issues: list = []
+    context: dict = {}
     if selected_sources:
         try:
             abstracts = pubmed_client.fetch_abstracts(selected_sources)
             if abstracts:
-                pk_values, ci_values, missing = pk_extractor.extract(abstracts)
+                pk_values, ci_values, missing = pk_extractor.extract(abstracts, inn=req.inn)
+                context = getattr(pk_extractor, "last_context", {}) or {}
+                extractor_warnings = getattr(pk_extractor, "last_warnings", []) or []
+                warnings.extend(extractor_warnings)
                 validation_issues, validation_warnings = validator.validate_with_warnings(pk_values)
                 warnings.extend(validation_warnings)
+                if "clarify_meal_composition" in extractor_warnings:
+                    validation_issues.append(
+                        ValidationIssue(
+                            metric="study_condition",
+                            severity="WARN",
+                            message="Fed study detected but meal composition details are missing.",
+                        )
+                    )
             else:
                 warnings.append("No abstracts returned from NCBI EFetch.")
         except Exception as exc:
@@ -209,15 +258,38 @@ def run_pipeline(req: RunPipelineRequest) -> FullReport:
         inn=req.inn,
         pk_values=pk_values,
         ci_values=ci_values,
+        study_condition=(context or {}).get("study_condition", "unknown"),
+        meal_details=(context or {}).get("meal_details"),
+        design_hints=(context or {}).get("design_hints"),
         warnings=warnings,
         missing=missing,
         validation_issues=validation_issues,
     )
 
+    pk_values_calc, ci_values_calc, calc_notes = _filter_pk_ci_for_calculation(
+        pk_values,
+        ci_values,
+        req.protocol_condition,
+    )
+    if calc_notes:
+        warnings.extend(calc_notes)
+
+    pk_json_calc = PKExtractionResponse(
+        inn=req.inn,
+        pk_values=pk_values_calc,
+        ci_values=ci_values_calc,
+        study_condition=pk_json.study_condition,
+        meal_details=pk_json.meal_details,
+        design_hints=pk_json.design_hints,
+        warnings=pk_json.warnings,
+        missing=pk_json.missing,
+        validation_issues=pk_json.validation_issues,
+    )
+
     # 3) CV info (gate)
     cv_info, cv_questions = select_cv_info(
-        pk_json,
-        ci_values,
+        pk_json_calc,
+        ci_values_calc,
         req.manual_cv,
         req.cv_confirmed,
         variability_model,
@@ -235,7 +307,7 @@ def run_pipeline(req: RunPipelineRequest) -> FullReport:
     )
 
     # 5) Design
-    design_resp = design_engine.select_design(pk_json, _cv_input_from_cvinfo(cv_info), req.nti)
+    design_resp = design_engine.select_design(pk_json_calc, _cv_input_from_cvinfo(cv_info), req.nti)
     design_decision = DesignDecision(
         recommendation=design_resp.design,
         reasoning_rule_id=design_resp.reasoning_rule_id
@@ -293,6 +365,7 @@ def run_pipeline(req: RunPipelineRequest) -> FullReport:
         pk_json,
         req.schedule_days,
         _cv_input_from_cvinfo(cv_info),
+        nti=req.nti,
         hospitalization_duration_days=req.hospitalization_duration_days,
         sampling_duration_days=req.sampling_duration_days,
         follow_up_duration_days=req.follow_up_duration_days,
@@ -307,7 +380,17 @@ def run_pipeline(req: RunPipelineRequest) -> FullReport:
     # 8) Protocol ID
     protocol_id, protocol_status = _resolve_protocol_id(req.protocol_id, req.inn)
 
-    open_questions = _dedupe_open_questions(list(reg_resp.open_questions or []) + cv_questions)
+    open_questions_list = list(reg_resp.open_questions or []) + cv_questions
+    if req.protocol_condition and "condition_tagging_missing" in calc_notes:
+        open_questions_list.append(
+            OpenQuestion(
+                category="feeding",
+                question="Condition-specific tagging not available; manual confirmation required.",
+                priority="medium",
+                linked_rule_id="FEEDING_CONDITION_TAGGING",
+            )
+        )
+    open_questions = _dedupe_open_questions(open_questions_list)
 
     return FullReport(
         inn=req.inn,
@@ -315,9 +398,13 @@ def run_pipeline(req: RunPipelineRequest) -> FullReport:
         protocol_status=protocol_status,
         replacement_subjects=req.replacement_subjects,
         visit_day_numbering=req.visit_day_numbering,
+        protocol_condition=req.protocol_condition,
         sources=sources,
         pk_values=pk_values,
         ci_values=ci_values,
+        study_condition=pk_json.study_condition,
+        meal_details=pk_json.meal_details,
+        design_hints=pk_json.design_hints,
         cv_info=cv_info,
         data_quality=data_quality,
         design=design_decision,
@@ -366,3 +453,67 @@ def _dedupe_open_questions(open_questions):
 
 app = FastAPI(title="OMNI BE Protocol Planner")
 app.include_router(router)
+
+
+def _filter_pk_ci_for_calculation(
+    pk_values: list,
+    ci_values: list,
+    protocol_condition: Optional[str],
+) -> tuple[list, list, list[str]]:
+    warnings: list[str] = []
+    filtered_pk: list = []
+    filtered_ci: list = []
+    tagging_missing = False
+
+    for pk in pk_values:
+        if not _is_ambiguous(pk):
+            filtered_pk.append(pk)
+            continue
+        if protocol_condition and _matches_protocol_condition(pk, protocol_condition):
+            filtered_pk.append(pk)
+        else:
+            if protocol_condition and not _has_condition_tags(pk):
+                tagging_missing = True
+
+    for ci in ci_values:
+        if not _is_ambiguous(ci):
+            filtered_ci.append(ci)
+            continue
+        if protocol_condition and _matches_protocol_condition(ci, protocol_condition):
+            filtered_ci.append(ci)
+        else:
+            if protocol_condition and not _has_condition_tags(ci):
+                tagging_missing = True
+
+    if protocol_condition and tagging_missing:
+        warnings.append("condition_tagging_missing")
+
+    return filtered_pk, filtered_ci, warnings
+
+
+def _is_ambiguous(item) -> bool:
+    ambiguous = getattr(item, "ambiguous_condition", None)
+    if ambiguous:
+        return True
+    warnings = getattr(item, "warnings", None)
+    return bool(warnings and "ambiguous_condition" in warnings)
+
+
+def _has_condition_tags(item) -> bool:
+    evidence = getattr(item, "evidence", None) or []
+    for ev in evidence:
+        tags = getattr(ev, "context_tags", None) or {}
+        if tags.get("fed") or tags.get("fasted"):
+            return True
+    return False
+
+
+def _matches_protocol_condition(item, protocol_condition: str) -> bool:
+    if protocol_condition not in ("fed", "fasted"):
+        return False
+    evidence = getattr(item, "evidence", None) or []
+    for ev in evidence:
+        tags = getattr(ev, "context_tags", None) or {}
+        if tags.get(protocol_condition):
+            return True
+    return False
