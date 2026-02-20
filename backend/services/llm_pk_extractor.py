@@ -32,7 +32,7 @@ class LLMPKExtractor:
         self.model = (model or os.getenv("LLM_MODEL") or "").strip()
         self.timeout = timeout
         self.max_retries = max(0, int(max_retries))
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger(__name__) 
 
         if not self.provider or not self.api_key:
             raise LLMDisabled("LLM provider/API key not configured.")
@@ -41,7 +41,7 @@ class LLMPKExtractor:
             if not self.base_url:
                 self.base_url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
             if not self.model:
-                self.model = "yandexgpt-pro"
+                self.model = "yandexgpt-lite"
             self.folder_id = (os.getenv("LLM_FOLDER_ID") or os.getenv("YANDEX_FOLDER_ID") or "").strip()
             if not self.folder_id:
                 raise LLMDisabled("YANDEX folder id not configured.")
@@ -66,11 +66,9 @@ class LLMPKExtractor:
             self.logger.warning("llm_pk_call_failed", exc_info=exc)
             return {}
 
-        payload = self._extract_json(response_text)
-        if payload is None:
-            return {}
-
-        payload.setdefault("inn", inn or "")
+        payload = self._extract_json(response_text) or {}
+        if not payload.get("inn"):
+            payload["inn"] = inn or "unknown"
         payload.setdefault("pk_values", [])
         payload.setdefault("ci_values", [])
         payload.setdefault("warnings", [])
