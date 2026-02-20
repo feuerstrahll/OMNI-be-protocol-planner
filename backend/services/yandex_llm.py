@@ -18,7 +18,7 @@ class YandexLLMClient:
         self,
         api_key: Optional[str] = None,
         folder_id: Optional[str] = None,
-        model: str = "yandexgpt-pro",
+        model: str = "yandexgpt-lite",
         max_retries: int = 2,
     ) -> None:
         self.api_key = api_key or os.getenv("YANDEX_API_KEY")
@@ -34,44 +34,29 @@ class YandexLLMClient:
             truncated = (text or "")[:6000]
             payload = {
                 "modelUri": f"gpt://{self.folder_id}/{self.model}",
-                "completionOptions": {"stream": False, "temperature": 0.0, "maxTokens": 800},
+                "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": 800},
                 "messages": [
-                    {
-                        "role": "system",
-                        "text": (
-                            "You are a pharmacokinetics data extraction assistant. "
-                            "Extract numeric PK values from the provided text. "
-                            "Return ONLY valid JSON, no explanation."
-                        ),
-                    },
                     {
                         "role": "user",
                         "text": (
+                            "You are an expert pharmacokinetics data extraction assistant. "
+                            "Extract numeric PK values from the provided text and return ONLY valid JSON. "
                             f"Drug: {inn}\n\nText:\n{truncated}\n\n"
-                            "Extract all available PK parameters and return JSON:\n"
+                            "Return JSON strictly matching this structure:\n"
                             "{\n"
-                            '  "CVintra": null or number (intra-subject CV in %),\n'
-                            '  "Cmax": null or number,\n'
-                            '  "Cmax_unit": null or string,\n'
-                            '  "AUC": null or number,\n'
-                            '  "AUC_unit": null or string,\n'
-                            '  "t_half": null or number,\n'
-                            '  "Tmax": null or number,\n'
-                            '  "CI_low": null or number (90% CI lower bound for AUC or Cmax GMR),\n'
-                            '  "CI_high": null or number,\n'
-                            '  "CI_param": null or "AUC" or "Cmax",\n'
-                            '  "n": null or integer (number of subjects),\n'
-                            '  "feeding_condition": null or "fasted" or "fed",\n'
-                            '  "study_type": null or "human" or "animal",\n'
-                            '  "design": null or "2x2_crossover" or "parallel" or "other"\n'
+                            '  "pk_values": [\n'
+                            '    {"name": "Cmax", "value": 245.0, "unit": "ng/mL", "evidence": [{"pmid": "123", "evidencetext": "..."}]},\n'
+                            '    {"name": "AUC", "value": 1850.0, "unit": "ng*h/mL"},\n'
+                            '    {"name": "CVintra", "value": 34.0, "unit": "%"}\n'
+                            "  ],\n"
+                            '  "ci_values": []\n'
                             "}\n"
                             "Rules:\n"
-                            "- CVintra means intra-subject (within-subject) CV only, NOT inter-subject\n"
-                            "- If a value is not mentioned, return null\n"
-                            "- Do not invent numbers\n"
-                            "- Return only the JSON object, nothing else"
+                            "- CVintra means intra-subject (within-subject) CV only\n"
+                            "- If a value is missing, DO NOT invent it\n"
+                            "- Output ONLY valid JSON, without Markdown blocks like ```json"
                         ),
-                    },
+                    }
                 ],
             }
             headers = {
@@ -81,7 +66,7 @@ class YandexLLMClient:
             }
             resp = self._post_with_retries(payload, headers)
             if resp.status_code != 200:
-                logger.warning("yandex_llm_http_error", status=resp.status_code, text=resp.text[:200])
+                logger.warning(f"yandex_llm_http_error: status={resp.status_code}, text={resp.text[:200]}")
                 return {}
             data = resp.json()
             text_out = (
@@ -90,12 +75,13 @@ class YandexLLMClient:
                 .get("message", {})
                 .get("text", "")
             )
+            text_out = text_out.replace("```json", "").replace("```", "").strip()
             match = re.search(r"\{.*\}", text_out, re.DOTALL)
             if not match:
                 return {}
             return json.loads(match.group(0))
         except Exception as exc:
-            logger.warning("yandex_llm_error", error=str(exc))
+            logger.warning(f"yandex_llm_error: {str(exc)}")
             return {}
 
     def _post_with_retries(self, payload: Dict[str, Any], headers: Dict[str, str]) -> requests.Response:
