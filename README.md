@@ -90,7 +90,7 @@ streamlit run frontend/app.py
 
 Редактирование текста и формулировок:
 - шаблон docx: `templates/synopsis_template.docx`
-- соответствие полей: `backend/services/docx_builder.py` (контекст Jinja2)
+- соответствие полей: `backend/services/docx_builder.py` 
 
 В синопсисе выводится блок **Data Quality summary** (DQI score/level + top‑3 причин)
 и раздел **Open Questions** (регуляторные/валидационные вопросы).
