@@ -8,15 +8,42 @@ import streamlit as st
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
-st.set_page_config(page_title="BE Planning MVP", layout="wide")
-st.title("BE Planning MVP")
+# Маппинг русских подписей в значения API
+PROTOCOL_CONDITION_RU_TO_API = {"": None, "натощак": "fasted", "после еды": "fed", "оба варианта": "both"}
+PROTOCOL_CONDITION_API_TO_RU = {None: "", "fasted": "натощак", "fed": "после еды", "both": "оба варианта"}
+STUDY_PHASE_RU_TO_API = {"автовыбор моделью": None, "однофазное": "single", "двухфазное": "two-phase"}
+STUDY_PHASE_OPTIONS_RU = ["автовыбор моделью", "однофазное", "двухфазное"]
+PREFERRED_DESIGN_OPTIONS_RU = [
+    ("Автовыбор", ""),
+    ("2×2 кроссовер", "2x2_crossover"),
+    ("репликат", "replicate"),
+    ("4-путёвый репликат", "4-way_replicate"),
+    ("параллельный", "parallel"),
+]
+
+st.set_page_config(page_title="Планирование БЭ — прототип", layout="wide")
+st.title("Планирование исследований биоэквивалентности (БЭ)")
 
 
-@st.cache_data(show_spinner=False)
-def api_post(path: str, payload: dict) -> dict:
-    resp = requests.post(f"{BACKEND_URL}{path}", json=payload, timeout=60)
+def api_post(path: str, payload: dict, timeout: int = 120) -> dict:
+    try:
+        resp = requests.post(
+            f"{BACKEND_URL}{path}",
+            json=payload,
+            timeout=timeout,
+        )
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(f"Не удалось подключиться к бекенду: {BACKEND_URL}")
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"Превышено время ожидания ({timeout}с) для {path}")
+
     if resp.status_code != 200:
-        raise RuntimeError(resp.text)
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        raise RuntimeError(f"[{resp.status_code}] {detail}")
+
     return resp.json()
 
 
@@ -123,19 +150,19 @@ def _find_ci_for_cv(ci_values: List[Dict]) -> Tuple[Optional[float], Optional[fl
 
 def _render_evidence(evidence_list: List[Dict]) -> None:
     if not evidence_list:
-        st.caption("Evidence not available.")
+        st.caption("Данные отсутствуют.")
         return
     for ev in evidence_list:
-        excerpt = ev.get("excerpt") or ev.get("snippet") or "Evidence not available."
+        excerpt = ev.get("excerpt") or ev.get("snippet") or "Данные отсутствуют."
         source = ev.get("pmid_or_url") or ev.get("pmid") or ev.get("url") or ev.get("source")
         pmid = ev.get("pmid")
         if not pmid and isinstance(source, str) and source.isdigit():
             pmid = source
         st.caption(excerpt)
         if pmid:
-            st.markdown(f"Source: PMID [{pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid}/)")
+            st.markdown(f"Источник: PMID [{pmid}](https://pubmed.ncbi.nlm.nih.gov/{pmid}/)")
         elif source:
-            st.caption(f"Source: {source}")
+            st.caption(f"Источник: {source}")
 
 
 def _format_design(fullreport: Optional[Dict], design_resp: Optional[Any]) -> Dict:
@@ -159,8 +186,11 @@ def _format_design(fullreport: Optional[Dict], design_resp: Optional[Any]) -> Di
 
 
 def _reset_cv_on_inn_change() -> None:
+    """При смене МНН сбрасываем CV и English INN, чтобы не использовать данные другого препарата."""
     st.session_state["cv_confirmed"] = False
     st.session_state["manual_cv"] = None
+    st.session_state["inn_en"] = ""
+    st.session_state["inn_en_confirmed"] = False
 
 
 if "sources" not in st.session_state:
@@ -211,8 +241,8 @@ with st.expander("📋 Порядок работы с системой", expande
     )
 
 st.subheader("0) Метаданные протокола")
-protocol_id = st.text_input("Protocol ID (optional)", value="", key="protocol_id")
-protocol_status = "Draft" if not protocol_id.strip() else "Final"
+protocol_id = st.text_input("Идентификатор протокола (необязательно)", value="", key="protocol_id")
+protocol_status = "Черновик" if not protocol_id.strip() else "Финальный"
 
 col_meta1, col_meta2 = st.columns(2)
 with col_meta1:
@@ -230,39 +260,41 @@ with col_meta2:
         help="Например: 500 mg, 10 mg/mL",
     )
 
-replacement_subjects_label = st.selectbox("Replacement subjects / alternates", ["No", "Yes"], index=0)
-replacement_subjects = replacement_subjects_label == "Yes"
-visit_day_numbering = st.text_input("Visit/day numbering", value="continuous across periods")
+replacement_subjects_label = st.selectbox("Резервные испытуемые (замена выбывших)", ["Нет", "Да"], index=0)
+replacement_subjects = replacement_subjects_label == "Да"
+visit_day_numbering = st.text_input("Нумерация визитов/дней", value="continuous across periods", help="Например: continuous across periods")
 
 col_cond1, col_cond2 = st.columns(2)
 with col_cond1:
     protocol_condition_label = st.selectbox(
-        "Режим приёма (fed/fasted/both)",
-        ["", "fasted", "fed", "both"],
+        "Режим приёма",
+        ["", "натощак", "после еды", "оба варианта"],
         index=0,
+        help="Натощак / после еды / оба варианта",
     )
-    protocol_condition = protocol_condition_label or None
+    protocol_condition = PROTOCOL_CONDITION_RU_TO_API.get(protocol_condition_label, protocol_condition_label or None)
 with col_cond2:
     study_phase_label = st.selectbox(
         "Тип исследования",
-        ["auto", "single", "two-phase"],
+        STUDY_PHASE_OPTIONS_RU,
         index=0,
         help="Однофазное / двухфазное / автовыбор моделью",
     )
-    study_phase = study_phase_label if study_phase_label != "auto" else None
+    study_phase = STUDY_PHASE_RU_TO_API.get(study_phase_label)
 
 with st.expander("Предпочтительный дизайн и RSABE", expanded=False):
-    preferred_design = st.text_input(
-        "Предпочтительный дизайн (оставьте пустым для автовыбора)",
-        value="",
-        key="preferred_design",
-        help="Например: 2x2_crossover, replicate, 4-way_replicate, parallel",
+    preferred_design_label_idx = st.selectbox(
+        "Предпочтительный дизайн",
+        options=[label for label, _ in PREFERRED_DESIGN_OPTIONS_RU],
+        index=0,
+        help="Либо автовыбор моделью, либо один из вариантов: 2×2 кроссовер, репликат, 4-путёвый репликат, параллельный",
     )
+    preferred_design = next((v for label, v in PREFERRED_DESIGN_OPTIONS_RU if label == preferred_design_label_idx), "").strip() or None
     rsabe_requested = st.checkbox(
         "Необходимость применения RSABE",
         value=False,
         key="rsabe_requested",
-        help="Если отмечено, система принудительно выберет replicate дизайн для RSABE",
+        help="Если отмечено, система принудительно выберет репликатный дизайн для RSABE",
     )
 
 with st.expander("Дополнительные требования заказчика", expanded=False):
@@ -290,12 +322,70 @@ with st.expander("Дополнительные требования заказч
 
 
 st.subheader("1) INN и источники")
-inn = st.text_input("INN", value="metformin", key="inn", on_change=_reset_cv_on_inn_change)
+inn = st.text_input("Международное непатентованное название (INN)", value="метформин", key="inn", on_change=_reset_cv_on_inn_change, help="Например: метформин, будесонид")
+
+# ── Нормализация INN: русский → English для PubMed ─────────────────────────
+if "inn_en" not in st.session_state:
+    st.session_state["inn_en"] = ""
+if "inn_en_confirmed" not in st.session_state:
+    st.session_state["inn_en_confirmed"] = False
+
+
+def _is_latin(s: str) -> bool:
+    return all(ord(c) < 128 for c in (s or "").replace(" ", "").replace("-", ""))
+
+
+col_inn1, col_inn2 = st.columns([3, 1])
+with col_inn1:
+    st.text_input(
+        "English INN для PubMed (заполняется автоматически)",
+        value=st.session_state.get("inn_en") or "",
+        key="inn_en",
+        help="Можно отредактировать вручную при необходимости",
+    )
+
+with col_inn2:
+    if st.button("🔄 Определить INN EN"):
+        inn_raw = st.session_state.get("inn", "").strip()
+        if not inn_raw:
+            st.warning("Введите МНН препарата.")
+        elif _is_latin(inn_raw):
+            st.session_state["inn_en"] = inn_raw.lower()
+            st.session_state["inn_en_confirmed"] = True
+            st.success(f"INN: {inn_raw.lower()}")
+            st.rerun()
+        else:
+            try:
+                resp = api_post("/translate_inn", {"inn_ru": inn_raw})
+                translated = (resp.get("inn_en") or "").strip().lower()
+                if translated:
+                    st.session_state["inn_en"] = translated
+                    st.session_state["inn_en_confirmed"] = True
+                    st.success(f"Переведено: {inn_raw} → **{translated}**")
+                    syns = resp.get("synonyms", [])
+                    if syns:
+                        st.caption(f"Синонимы: {', '.join(syns[:3])}")
+                    st.rerun()
+                else:
+                    st.error("Не удалось определить English INN. Введите вручную.")
+            except Exception as exc:
+                st.error(f"Ошибка трансляции: {exc}")
+
+inn_ru = st.session_state.get("inn", "").strip()
+inn_en = (st.session_state.get("inn_en") or "").strip().lower()
+inn_for_api = inn_en or inn_ru
+
+if inn_ru and not inn_en:
+    st.warning("⚠️ Нажмите «🔄 Определить INN EN» перед поиском в PubMed.")
 
 with st.expander("Поиск источников (PubMed/PMC)", expanded=False):
     if st.button("Найти источники"):
         try:
-            resp = api_post("/search_sources", {"inn": inn, "retmax": 10})
+            resp = api_post("/search_sources", {
+                "inn": inn_en or inn_ru,
+                "inn_ru": inn_ru or None,
+                "retmax": 10,
+            })
             st.session_state["sources"] = resp.get("sources", [])
             st.session_state["search"] = resp
             st.session_state["selected_sources"] = [s.get("pmid") for s in st.session_state["sources"]]
@@ -342,12 +432,12 @@ ci_values = _as_list((fullreport or {}).get("ci_values") or (pk_state or {}).get
 dq_level = _get((fullreport or {}).get("data_quality"), "level")
 cv_extracted_value = cv_value
 
-st.markdown("## CVintra Confirmation (Required for N_det)")
-st.warning("N_det is disabled until CVintra is confirmed.")
-st.markdown(f"**CV source:** `{cv_source}`")
+st.markdown("## Подтверждение CVintra (обязательно для расчёта N_det)")
+st.warning("N_det не рассчитывается, пока не подтверждено значение CVintra.")
+st.markdown(f"**Источник CV:** `{cv_source}`")
 
 cv_confirmed_checked = st.checkbox(
-    "I confirm CVintra value is correct and can be used for N_det",
+    "Подтверждаю: значение CVintra корректно и может использоваться для расчёта N_det",
     key="cv_confirmed_checkbox",
     value=bool(st.session_state.get("cv_confirmed", False)),
 )
@@ -367,12 +457,12 @@ if cv_extracted_value is not None:
         cv_display = str(cv_extracted_value)
     st.metric("CVintra (%)", value=cv_display)
 else:
-    st.info("CVintra not available yet. You can enter a manual value below.")
+    st.info("CVintra пока недоступен. Можно ввести значение вручную ниже.")
 
 if cv_source == "derived_from_ci":
     ci_low, ci_high, ci_n = _find_ci_for_cv(ci_values)
     st.info(
-        "Assumptions for derived CV: 90% CI, 2x2 crossover, log-scale, correctness of n/CI. "
+        "Допущения для расчёта CV по ДИ: 90% ДИ, 2×2 кроссовер, лог-шкала. "
         f"CI_low={ci_low or '—'}, CI_high={ci_high or '—'}, n={ci_n or '—'}"
     )
 
@@ -381,9 +471,10 @@ _render_evidence(cv_evidence)
 show_manual = cv_extracted_value is None or cv_source in ("range", "unknown") or dq_level == "red"
 manual_cv_value = None
 if show_manual:
-    st.caption("Manual CV still requires confirmation.")
-    use_manual_cv = st.checkbox("Use manual CV input", value=True, key="use_manual_cv")
+    st.caption("Ручное значение CV также требует подтверждения (галочка выше).")
+    use_manual_cv = st.checkbox("Задать CVintra вручную", value=True, key="use_manual_cv")
     if use_manual_cv:
+        st.caption("Предполагаемая внутрисубъектная вариабельность: ориентиры — низкая (~20%), высокая (~40%). Либо укажите точное значение ниже.")
         preset_cols = st.columns(4)
         presets = [20, 30, 40, 50]
         for i, p in enumerate(presets):
@@ -394,7 +485,7 @@ if show_manual:
             st.session_state["manual_cv_input"] = st.session_state.get("manual_cv", 30)
         manual_default = st.session_state.get("manual_cv_input", 30)
         manual_cv_value = st.number_input(
-            "Manual CVintra (%)",
+            "CVintra (%)",
             value=float(manual_default),
             min_value=1.0,
             max_value=200.0,
@@ -404,24 +495,54 @@ if show_manual:
             st.session_state["manual_cv"] = float(manual_cv_value)
 
 st.markdown("---")
-st.subheader("▶ Run Pipeline (FullReport)")
+st.subheader("▶ Запуск полного расчёта (Run pipeline)")
 st.info(
     "**Порядок действий перед запуском:**\n"
-    "1. Заполните секцию 0 (метаданные, форма, доза, режим, пол, возраст)\n"
+    "1. Заполните секцию 0 (метаданные: форма, доза, режим приёма, тип исследования, пол, возраст)\n"
     "2. Введите INN в секции 1 и при необходимости выберите источники\n"
-    "3. Введите CVintra выше и **поставьте галочку подтверждения**\n"
-    "4. Выставьте power/alpha/dropout в секции 5\n"
-    "5. Укажите washout в секции 7\n\n"
-    "Затем нажмите кнопку ниже — система запустит весь pipeline одним запросом."
+    "3. Задайте CVintra выше и **поставьте галочку подтверждения**\n"
+    "4. При необходимости настройте мощность/альфа/выбывания в секции 5\n"
+    "5. Укажите длительность вымывания в секции 7\n\n"
+    "Затем нажмите кнопку ниже — система выполнит поиск, извлечение PK, подбор дизайна, расчёт N и регуляторные проверки."
 )
 
-if st.button("▶ Run pipeline", type="primary"):
+
+# ── Валидация перед запуском ───────────────────────────────────────────────
+def _validate_inputs() -> list[str]:
+    errors = []
+    if not inn_ru:
+        errors.append("Введите МНН препарата")
+    if not inn_en:
+        errors.append("Определите английский INN (нажмите «🔄 Определить INN EN»)")
+    if not (dosage_form or "").strip():
+        errors.append("Укажите лекарственную форму")
+    if not (dose or "").strip():
+        errors.append("Укажите дозировку")
+    if not (protocol_condition_label or "").strip():
+        errors.append("Выберите режим приёма (натощак / после еды)")
+    return errors
+
+
+validation_errors = _validate_inputs()
+if validation_errors:
+    for err in validation_errors:
+        st.error(f"• {err}")
+    run_disabled = True
+else:
+    run_disabled = False
+
+if st.button(
+    "▶ Запустить полный расчёт (Run pipeline)",
+    type="primary",
+    disabled=run_disabled,
+):
     seed_val = st.session_state.get("risk_seed")
     if seed_val == 0:
         seed_val = None
     risk_dist = st.session_state.get("risk_distribution") or None
     payload = {
-        "inn": inn,
+        "inn": inn_en or inn_ru,
+        "inn_ru": inn_ru or None,
         "dosage_form": dosage_form.strip() or None,
         "dose": dose.strip() or None,
         "retmax": 10,
@@ -429,7 +550,7 @@ if st.button("▶ Run pipeline", type="primary"):
         "manual_cv": st.session_state.get("manual_cv"),
         "cv_confirmed": st.session_state.get("cv_confirmed", False),
         "rsabe_requested": rsabe_requested or None,
-        "preferred_design": preferred_design.strip() or None,
+        "preferred_design": (preferred_design.strip() if preferred_design else None) or None,
         "power": float(st.session_state.get("power", 0.8)),
         "alpha": float(st.session_state.get("alpha", 0.05)),
         "dropout": float(st.session_state.get("dropout", 0.1)),
@@ -457,16 +578,20 @@ if st.button("▶ Run pipeline", type="primary"):
     try:
         resp = api_post("/run_pipeline", payload)
         st.session_state["fullreport"] = resp
-        st.success("Pipeline complete")
+        st.success("Расчёт завершён.")
     except Exception as exc:
         st.error(f"Ошибка pipeline: {exc}")
 
 
-st.subheader("2) PK Extraction (optional)")
+st.subheader("2) Извлечение PK (опционально)")
 selected_sources = st.session_state.get("selected_sources", [])
 if st.button("Извлечь PK"):
     try:
-        resp = api_post("/extract_pk", {"inn": inn, "sources": selected_sources})
+        resp = api_post("/extract_pk", {
+            "inn": inn_en or inn_ru,
+            "inn_ru": inn_ru or None,
+            "sources": selected_sources,
+        })
         st.session_state["pk"] = resp
         st.success("PK данные извлечены")
     except Exception as exc:
@@ -497,19 +622,19 @@ if pk_values_display:
     if pk and pk.get("warnings"):
         st.warning("; ".join(pk.get("warnings")))
     if pk and pk.get("validation_issues"):
-        st.warning(f"Validation issues: {pk.get('validation_issues')}")
+        st.warning(f"Замечания валидации: {pk.get('validation_issues')}")
     if study_condition:
-        st.caption(f"Study condition: {study_condition}")
+        st.caption(f"Условие исследования: {study_condition}")
     if meal_details:
         details_text = ", ".join(
             [f"{key}={value}" for key, value in meal_details.items() if value not in (None, "")]
         )
         if details_text:
-            st.caption(f"Meal details: {details_text}")
+            st.caption(f"Детали приёма пищи: {details_text}")
 
 
-st.subheader("3) Design")
-nti_flag = st.checkbox("NTI препарат", value=False, key="nti_flag")
+st.subheader("3) Дизайн исследования")
+nti_flag = st.checkbox("Препарат с узким терапевтическим индексом (NTI)", value=False, key="nti_flag")
 design_resp = st.session_state.get("design")
 design_from_report = _format_design(st.session_state.get("fullreport"), design_resp)
 pk_payload = pk
@@ -517,7 +642,7 @@ if not pk_payload and st.session_state.get("fullreport"):
     fullreport_pk = (st.session_state.get("fullreport") or {}).get("pk_values")
     if fullreport_pk is not None:
         pk_payload = {
-            "inn": inn,
+            "inn": inn_en or inn_ru,
             "pk_values": fullreport_pk or [],
             "ci_values": (st.session_state.get("fullreport") or {}).get("ci_values") or [],
             "warnings": [],
@@ -549,7 +674,7 @@ if design_clicked and pk_payload:
         resp = api_post("/select_design", {"pk_json": pk_payload, "cv_input": cv_payload, "nti": nti_flag})
         design_value = resp.get("recommendation") or resp.get("design") or "2x2 crossover"
         st.session_state["design"] = design_value
-        st.success("Дизайн выбран")
+        st.success("Дизайн подобран")
         design_from_report = _format_design(st.session_state.get("fullreport"), resp)
     except Exception as exc:
         st.error(f"Ошибка дизайна: {exc}")
@@ -560,19 +685,19 @@ if design_from_report:
     st.write(design_from_report)
 
 
-st.subheader("4) Оценка вариабельности (optional)")
+st.subheader("4) Оценка вариабельности (опционально)")
 colA, colB, colC = st.columns(3)
 with colA:
-    bcs_class = st.selectbox("BCS класс", [None, 1, 2, 3, 4], index=0)
+    bcs_class = st.selectbox("Класс BCS", [None, 1, 2, 3, 4], index=0)
 with colB:
     logp = st.number_input("logP", value=0.0, min_value=-10.0, max_value=10.0,
                        help="Коэффициент липофильности. Может быть отрицательным.")
 with colC:
-    first_pass = st.selectbox("First-pass", [None, "low", "medium", "high"], index=0)
+    first_pass = st.selectbox("First-pass метаболизм", [None, "low", "medium", "high"], index=0)
 
 colD, colE = st.columns(2)
 with colD:
-    cyp = st.selectbox("CYP involvement", [None, "low", "medium", "high"], index=0)
+    cyp = st.selectbox("Участие CYP", [None, "low", "medium", "high"], index=0)
 with colE:
     nti_var = st.checkbox("NTI", value=False, key="nti_var")
 
@@ -581,7 +706,7 @@ if st.button("Оценить CV диапазон"):
         resp = api_post(
             "/variability_estimate",
             {
-                "inn": inn,
+                "inn": inn_en or inn_ru,
                 "bcs_class": bcs_class,
                 "logp": logp if logp > 0 else None,
                 "first_pass": first_pass,
@@ -599,31 +724,31 @@ if st.session_state.get("variability"):
     st.write(st.session_state["variability"])
 
 
-st.subheader("5) Sample Size")
-st.slider("Power", 0.5, 0.99, 0.8, key="power")
-st.slider("Alpha", 0.01, 0.1, 0.05, key="alpha")
-st.slider("Dropout", 0.0, 0.5, 0.1, key="dropout")
-st.slider("Screen-fail", 0.0, 0.8, 0.1, key="screen_fail")
+st.subheader("5) Размер выборки")
+st.slider("Мощность (power)", 0.5, 0.99, 0.8, key="power")
+st.slider("Уровень значимости (alpha)", 0.01, 0.1, 0.05, key="alpha")
+st.slider("Доля выбываний (dropout)", 0.0, 0.5, 0.1, key="dropout")
+st.slider("Доля screen-fail", 0.0, 0.8, 0.1, key="screen_fail")
 
-det_tab, risk_tab = st.tabs(["Deterministic (N_det)", "Risk-based (N_risk)"])
+det_tab, risk_tab = st.tabs(["Детерминированный (N_det)", "С учётом риска (N_risk)"])
 
 with det_tab:
     if not cv_confirmed:
-        st.info("Disabled until CV confirmed. Go to CVintra Confirmation step.")
+        st.info("Расчёт недоступен до подтверждения CV. Выполните шаг «Подтверждение CVintra» выше.")
 
     sample_det = (st.session_state.get("fullreport") or {}).get("sample_size_det")
     if sample_det:
         st.write(sample_det)
     else:
-        st.caption("N_det not computed (requires confirmed CV).")
+        st.caption("N_det не рассчитан (требуется подтверждённый CV).")
 
-    if st.button("Compute N_det", disabled=not cv_confirmed):
+    if st.button("Рассчитать N_det", disabled=not cv_confirmed):
         design_value = design_from_report.get("design") if design_from_report else None
         cv_for_calc = manual_cv_value if manual_cv_value is not None else cv_extracted_value
         if not design_value:
-            st.warning("Design not determined.")
+            st.warning("Дизайн не определён.")
         elif cv_for_calc is None:
-            st.warning("CVintra value not provided.")
+            st.warning("Не задано значение CVintra.")
         else:
             try:
                 resp = api_post(
@@ -652,15 +777,15 @@ with det_tab:
                     },
                 )
                 st.session_state["sample"] = resp
-                st.success("N_det calculated")
+                st.success("N_det рассчитан")
                 st.write(resp)
             except Exception as exc:
                 st.error(f"Ошибка расчета N_det: {exc}")
 
 with risk_tab:
-    st.number_input("Risk seed (optional)", value=0, min_value=0, key="risk_seed")
-    st.number_input("Monte Carlo sims", value=5000, min_value=1000, max_value=50000, key="risk_n_sims")
-    st.text_input("CV distribution (optional)", value="", key="risk_distribution")
+    st.number_input("Seed для симуляций (необязательно)", value=0, min_value=0, key="risk_seed")
+    st.number_input("Число симуляций Монте-Карло", value=5000, min_value=1000, max_value=50000, key="risk_n_sims")
+    st.text_input("Распределение CV (необязательно)", value="", key="risk_distribution")
 
     sample_risk = (st.session_state.get("fullreport") or {}).get("sample_size_risk")
     if sample_risk:
@@ -681,23 +806,23 @@ with risk_tab:
         )
         st.caption(f"method={sample_risk.get('method')}, numpy={sample_risk.get('numpy_version')}")
     else:
-        st.caption("N_risk not computed (requires CV range/distribution).")
+        st.caption("N_risk не рассчитан (требуется диапазон/распределение CV).")
 
 
-st.subheader("6) Data Quality + Reg-check")
+st.subheader("6) Качество данных и регуляторная проверка")
 data_quality = (st.session_state.get("fullreport") or {}).get("data_quality")
 if data_quality:
-    st.metric("Data Quality Index", value=str(data_quality.get("score", "—")))
+    st.metric("Индекс качества данных (DQI)", value=str(data_quality.get("score", "—")))
     components = data_quality.get("components") or {}
     traceability = components.get("traceability")
     if traceability is not None:
         try:
-            st.caption(f"Traceability component: {float(traceability):.2f}")
+            st.caption(f"Компонент прослеживаемости: {float(traceability):.2f}")
         except Exception:
-            st.caption(f"Traceability component: {traceability}")
+            st.caption(f"Компонент прослеживаемости: {traceability}")
     st.write(data_quality)
 else:
-    st.info("Data Quality: Not computed.")
+    st.info("Качество данных: не рассчитано.")
 
 reg_checks = (st.session_state.get("fullreport") or {}).get("reg_check") or (st.session_state.get("reg") or {}).get("checks")
 open_questions = (st.session_state.get("fullreport") or {}).get("open_questions") or (st.session_state.get("reg") or {}).get(
@@ -707,36 +832,36 @@ open_questions = (st.session_state.get("fullreport") or {}).get("open_questions"
 if reg_checks:
     st.write(reg_checks)
 else:
-    st.caption("Reg-check: No items.")
+    st.caption("Регуляторная проверка: пунктов нет.")
 
 if open_questions:
-    st.subheader("Open Questions / To clarify")
+    st.subheader("Открытые вопросы / Требуют уточнения")
     for item in open_questions:
-        st.write(f"- {item.get('question')} (priority: {item.get('priority')})")
+        st.write(f"- {item.get('question')} (приоритет: {item.get('priority')})")
 else:
-    st.caption("Open Questions: No items.")
+    st.caption("Открытых вопросов нет.")
 
 
-st.subheader("7) Regulatory input (optional)")
-st.number_input("Washout (days)", value=0.0, min_value=0.0, key="schedule_days")
-with st.expander("Дополнительные параметры политики (опционально)"):
-    st.number_input("Hospitalization duration (days)", value=0.0, min_value=0.0, key="hospitalization_duration_days")
-    st.number_input("Sampling duration (days)", value=0.0, min_value=0.0, key="sampling_duration_days")
-    st.number_input("Follow-up duration (days)", value=0.0, min_value=0.0, key="follow_up_duration_days")
+st.subheader("7) Регуляторный ввод (опционально)")
+st.number_input("Длительность вымывания (дни)", value=0.0, min_value=0.0, key="schedule_days")
+with st.expander("Дополнительные параметры (опционально)"):
+    st.number_input("Длительность госпитализации (дни)", value=0.0, min_value=0.0, key="hospitalization_duration_days")
+    st.number_input("Длительность забора проб (дни)", value=0.0, min_value=0.0, key="sampling_duration_days")
+    st.number_input("Длительность наблюдения (дни)", value=0.0, min_value=0.0, key="follow_up_duration_days")
     phone_follow_up_label = st.selectbox(
-        "Phone follow-up acceptable?",
-        ["unspecified", "Yes", "No"],
+        "Допустим ли телефонный follow-up?",
+        ["не указано", "Да", "Нет"],
         index=0,
         key="phone_follow_up_label",
     )
     phone_follow_up_ok = None
-    if phone_follow_up_label == "Yes":
+    if phone_follow_up_label == "Да":
         phone_follow_up_ok = True
-    elif phone_follow_up_label == "No":
+    elif phone_follow_up_label == "Нет":
         phone_follow_up_ok = False
     st.session_state["phone_follow_up_ok"] = phone_follow_up_ok
-    st.number_input("Blood volume total (mL)", value=0.0, min_value=0.0, key="blood_volume_total_ml")
-    st.number_input("Blood volume PK-only (mL)", value=0.0, min_value=0.0, key="blood_volume_pk_ml")
+    st.number_input("Общий объём крови (мл)", value=0.0, min_value=0.0, key="blood_volume_total_ml")
+    st.number_input("Объём крови только для PK (мл)", value=0.0, min_value=0.0, key="blood_volume_pk_ml")
 
 if st.session_state.get("fullreport"):
     st.success("✅ Регуляторный чек-лист выполнен в рамках Run pipeline — результаты в секции 6 выше.")
@@ -786,18 +911,19 @@ def _build_markdown_synopsis(report: dict) -> str:
     study = report.get("study") or {}
     design_obj = report.get("design") or study.get("design") or {}
     dq = report.get("dqi") or report.get("data_quality") or {}
+    inn_display = report.get("inn_ru") or report.get("inn", "—")
     lines = [
         f"# Синопсис протокола исследования биоэквивалентности",
         "",
-        f"**Действующее вещество (INN):** {report.get('inn', '—')}",
+        f"**Действующее вещество (МНН):** {inn_display}",
         f"**Лекарственная форма:** {report.get('dosage_form') or '—'}",
         f"**Дозировка:** {report.get('dose') or '—'}",
         f"**Номер протокола:** {report.get('protocol_id') or '—'}",
-        f"**Статус:** {report.get('protocol_status') or '—'}",
+        f"**Статус:** {('Черновик' if (report.get('protocol_status') or '') == 'Draft' else 'Финальный' if (report.get('protocol_status') or '') == 'Final' else report.get('protocol_status') or '—')}",
         "",
         "## Цель исследования",
         f"Оценка биоэквивалентности тестового и референтного препаратов "
-        f"действующего вещества {report.get('inn', '—')} у здоровых добровольцев.",
+        f"действующего вещества {inn_display} у здоровых добровольцев.",
         "",
         "## Задачи исследования",
         "1. Определить фармакокинетические параметры (Cmax, AUC0-t, AUC0-inf).",
@@ -809,8 +935,12 @@ def _build_markdown_synopsis(report: dict) -> str:
     rec = (design_obj.get("recommendation") or design_obj.get("recommended")
            or design_obj.get("design") or "—")
     lines.append(f"- **Рекомендованный дизайн:** {rec}")
-    lines.append(f"- **Режим приёма:** {report.get('protocol_condition') or '—'}")
-    lines.append(f"- **Тип исследования:** {report.get('study_phase') or 'auto'}")
+    _cond = report.get("protocol_condition")
+    _cond_ru = PROTOCOL_CONDITION_API_TO_RU.get(_cond, _cond or "—")
+    lines.append(f"- **Режим приёма:** {_cond_ru}")
+    _phase = report.get("study_phase")
+    _phase_ru = {"single": "однофазное", "two-phase": "двухфазное", "auto": "автовыбор"}.get(_phase, _phase or "—")
+    lines.append(f"- **Тип исследования:** {_phase_ru}")
     lines.append("")
     lines.append("## Обоснование дизайна")
     reasoning = design_obj.get("reasoning_text") or design_obj.get("reasoning") or "—"
@@ -882,9 +1012,10 @@ def _build_markdown_synopsis(report: dict) -> str:
     return "\n".join(lines)
 
 
-st.subheader("8) Export")
+st.subheader("8) Экспорт")
 fullreport_export = st.session_state.get("fullreport") or {
-    "inn": inn,
+    "inn": inn_en or inn_ru,
+    "inn_ru": inn_ru or None,
     "dosage_form": dosage_form.strip() or None,
     "dose": dose.strip() or None,
     "protocol_id": protocol_id if protocol_id.strip() else None,
@@ -921,7 +1052,7 @@ json_blob = json.dumps(fullreport_export, ensure_ascii=False, indent=2)
 export_col1, export_col2, export_col3 = st.columns(3)
 with export_col1:
     st.download_button(
-        "Download FullReport.json",
+        "Скачать FullReport.json",
         data=json_blob,
         file_name="FullReport.json",
         mime="application/json",
@@ -929,7 +1060,7 @@ with export_col1:
 with export_col2:
     md_text = _build_markdown_synopsis(fullreport_export)
     st.download_button(
-        "Download synopsis.md",
+        "Скачать synopsis.md",
         data=md_text,
         file_name="synopsis.md",
         mime="text/markdown",
@@ -938,11 +1069,11 @@ with export_col2:
 with export_col3:
     pass
 
-if st.button("Build synopsis .docx"):
+if st.button("Собрать синопсис .docx"):
     try:
         resp = api_post("/build_docx", {"all_json": fullreport_export})
         if resp.get("warnings"):
-            st.error("Docx render failed. See warnings.")
+            st.error("Ошибка формирования docx. См. предупреждения.")
             st.write(resp.get("warnings"))
             st.session_state["docx_error"] = resp.get("warnings")
             st.session_state["docx_bytes"] = None
@@ -974,7 +1105,7 @@ if st.button("Build synopsis .docx"):
 
 if st.session_state.get("docx_bytes"):
     st.download_button(
-        "Download synopsis.docx",
+        "Скачать synopsis.docx",
         data=st.session_state["docx_bytes"],
         file_name=st.session_state.get("docx_filename") or "synopsis.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

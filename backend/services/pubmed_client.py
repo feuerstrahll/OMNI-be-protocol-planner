@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Dict, List, Tuple
 from xml.etree import ElementTree
 
@@ -28,8 +29,16 @@ class PubMedClient:
             params["api_key"] = self.config.ncbi_api_key
         return params
 
+    def _throttle(self) -> None:
+        """Задержка перед запросом к NCBI: без API-ключа лимит 3 req/s, с ключом — 10 req/s."""
+        if not self.config.ncbi_api_key:
+            time.sleep(0.35)
+        else:
+            time.sleep(0.11)
+
     def _esearch(self, db: str, term: str, retmax: int) -> List[str]:
         # NCBI E-utilities ESearch (no scraping).
+        self._throttle()
         url = f"{self.base_url}esearch.fcgi"
         params = {
             "db": db,
@@ -44,6 +53,7 @@ class PubMedClient:
     def _esummary(self, db: str, ids: List[str]) -> Dict[str, Dict[str, str]]:
         if not ids:
             return {}
+        self._throttle()
         # ESummary returns metadata (title, journal, pubdate).
         url = f"{self.base_url}esummary.fcgi"
         params = {
@@ -67,7 +77,7 @@ class PubMedClient:
             f"\"healthy volunteers\"[Title/Abstract] OR "
             f"\"healthy subjects\"[Title/Abstract] OR "
             f"\"crossover\"[Title/Abstract]) AND "
-            f"(pharmacokinetics OR Cmax OR AUC)"
+            f"(pharmacokinetics[Title/Abstract] OR Cmax[Title/Abstract] OR AUC[Title/Abstract] OR pharmacokinetics[MeSH Terms])"
         )
         warnings: List[str] = []
         sources: List[SourceCandidate] = []
@@ -134,13 +144,22 @@ class PubMedClient:
         return abstracts
 
     def _efetch_abstracts(self, db: str, ids: List[str]) -> Dict[str, str]:
+        if not ids:
+            return {}
+        self._throttle()
         # EFetch returns abstracts/full records in XML.
+        # Для PubMed abstract возвращается при rettype=abstract.
+        # Для PMC без rettype=full NCBI отдаёт DocSum/Medline — тегов <article>/<abstract> нет.
         url = f"{self.base_url}efetch.fcgi"
         params = {
             "db": db,
             "id": ",".join(ids),
             "retmode": "xml",
         }
+        if db == "pubmed":
+            params["rettype"] = "abstract"
+        elif db == "pmc":
+            params["rettype"] = "full"  # JATS XML с <article> и <abstract>
         params.update(self._common_params())
         text = request_text_with_cache(self.cache, url, params)
         return self._parse_abstracts_xml(text)

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import math
 from typing import Dict, List, Optional, Tuple
@@ -22,12 +22,14 @@ class PKValidator:
         }
         if "metrics" in self.rules:
             self.metric_rules = self.rules.get("metrics", {})
-            self.normalization = self._build_normalization()
             self.warning_rules = []
         else:
             self.metric_rules = self._build_metric_rules_from_new(self.rules)
-            self.normalization = self._build_normalization_from_rules(self.rules)
             self.warning_rules = self.rules.get("warnings") or []
+
+        # Нормализация: сначала из YAML (units/conversions), иначе fallback на хардкод
+        norm_from_rules = self._build_normalization_from_rules(self.rules)
+        self.normalization = norm_from_rules if norm_from_rules else self._build_normalization()
 
     def validate(self, pk_values: List[PKValue], ci_values: Optional[List[CIValue]] = None) -> List[ValidationIssue]:
         issues, _ = self.validate_with_warnings(pk_values, ci_values)
@@ -242,6 +244,7 @@ class PKValidator:
         u = u.replace("hr", "h")
         u = u.replace(" ", "")
         u = u.lower()
+        u = u.replace("mcg", "ug")  # американское обозначение микрограмма (PubMed)
         return u
 
     @staticmethod
@@ -268,6 +271,9 @@ class PKValidator:
                     "mg*h/l": 1000.0,
                     "µg*h/l": 1.0,
                     "ug*h/l": 1.0,
+                    "µg*h/ml": 1000.0,
+                    "ug*h/ml": 1000.0,
+                    "mg*h/ml": 1_000_000.0,
                     "ng*h/l": 0.001,
                 },
             },
@@ -275,6 +281,10 @@ class PKValidator:
                 "unit": "h",
                 "factors": {
                     "h": 1.0,
+                    "min": 1.0 / 60.0,
+                    "d": 24.0,
+                    "day": 24.0,
+                    "days": 24.0,
                 },
             },
             "Tmax": {
@@ -282,6 +292,9 @@ class PKValidator:
                 "factors": {
                     "h": 1.0,
                     "min": 1.0 / 60.0,
+                    "d": 24.0,
+                    "day": 24.0,
+                    "days": 24.0,
                 },
             },
             "CVintra": {
@@ -324,7 +337,8 @@ class PKValidator:
             for conv_key, factor in conversions.items():
                 if "_to_" not in conv_key:
                     continue
-                from_unit, to_unit = conv_key.split("_to_", 1)
+                # rsplit(..., 1) — разбивать по последнему "_to_", чтобы единицы с подчёркиванием (напр. iu_per_ml) не ломались
+                from_unit, to_unit = conv_key.rsplit("_to_", 1)
                 if self._canonical_unit(to_unit) == canonical_key:
                     factors[self._canonical_unit(from_unit)] = float(factor)
             normalization[metric] = {
@@ -351,8 +365,7 @@ class PKValidator:
                 if pk.value > 60:
                     self._add_warning(pk, "cv_gt_60")
 
-    @staticmethod
-    def _add_warning(pk: PKValue, warning: str) -> None:
+    def _add_warning(self, pk: PKValue, warning: str) -> None:
         if pk.warnings is None:
             pk.warnings = []
         if warning not in pk.warnings:

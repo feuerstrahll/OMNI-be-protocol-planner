@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import List, Tuple
 
@@ -87,12 +87,21 @@ class VariabilityModel:
         )
 
     def _base_range(self, bcs_class: int | None) -> Tuple[int, int]:
-        base = self.rules.get("base", {})
-        if bcs_class:
-            mapping = base.get("bcs", {})
-            if str(bcs_class) in mapping:
-                return tuple(mapping[str(bcs_class)])
-        return tuple(base.get("default", [30, 50]))
+        """Диапазон CV из правил (base.bcs / base.default). При пустом YAML или ошибке — (30, 50)."""
+        fallback: Tuple[int, int] = (30, 50)
+        base = self.rules.get("base") or {}
+        try:
+            if bcs_class is not None:
+                mapping = base.get("bcs") or {}
+                pair = mapping.get(str(bcs_class))
+                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                    return (int(pair[0]), int(pair[1]))
+            default = base.get("default", [30, 50])
+            if isinstance(default, (list, tuple)) and len(default) >= 2:
+                return (int(default[0]), int(default[1]))
+        except (TypeError, ValueError, IndexError):
+            pass
+        return fallback
 
     def _baseline_range(self) -> Tuple[int, int]:
         baseline = self.rules.get("baseline_CV_range") or [30, 50]
@@ -109,24 +118,23 @@ class VariabilityModel:
     ) -> Tuple[int, int]:
         cfg = self.rules.get("drivers") or {}
 
-        def _apply(driver_key: str, condition: bool) -> Tuple[int, int]:
-            nonlocal low, high
+        def _apply(driver_key: str, condition: bool, lo: int, hi: int) -> Tuple[int, int]:
             if not condition or driver_key not in cfg:
-                return low, high
+                return lo, hi
             add = cfg.get(driver_key, {}).get("add_range") or [0, 0]
             if isinstance(add, list) and len(add) >= 2:
-                low += float(add[0])
-                high += float(add[1])
+                lo = int(lo + float(add[0]))
+                hi = int(hi + float(add[1]))
             mech = cfg.get(driver_key, {}).get("mechanism")
             if mech:
                 drivers.append(mech)
-            return low, high
+            return lo, hi
 
-        _apply("BCS_class_II_or_IV", data.bcs_class in (2, 4))
-        _apply("strong_first_pass_metabolism", data.first_pass == "high")
-        _apply("CYP_polymorphic_metabolism", data.cyp_involvement == "high")
-        _apply("food_effect_present", bool(data.pk_json and data.pk_json.study_condition == "fed"))
-        _apply("modified_release", False)
+        low, high = _apply("BCS_class_II_or_IV", data.bcs_class in (2, 4), low, high)
+        low, high = _apply("strong_first_pass_metabolism", data.first_pass == "high", low, high)
+        low, high = _apply("CYP_polymorphic_metabolism", data.cyp_involvement == "high", low, high)
+        low, high = _apply("food_effect_present", bool(data.pk_json and data.pk_json.study_condition == "fed"), low, high)
+        low, high = _apply("modified_release", False, low, high)
 
         if data.nti:
             drivers.append("NTI flag present; consider conservative range")

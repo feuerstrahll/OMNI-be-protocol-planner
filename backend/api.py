@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 
@@ -22,6 +22,8 @@ from backend.schemas import (
     SampleSizeResponse,
     SearchSourcesRequest,
     SearchSourcesResponse,
+    TranslateInnRequest,
+    TranslateInnResponse,
     ValidationIssue,
     VariabilityInput,
     VariabilityResponse,
@@ -70,6 +72,21 @@ validator = PKValidator("backend/rules/validation_rules.yaml")
 design_engine = DesignEngine("backend/rules/design_rules.yaml")
 variability_model = VariabilityModel("backend/rules/variability_rules.yaml")
 reg_checker = RegChecker("backend/rules/reg_rules.yaml")
+
+
+@router.post("/translate_inn", response_model=TranslateInnResponse)
+def translate_inn(req: TranslateInnRequest) -> TranslateInnResponse:
+    inn_ru = (req.inn_ru or "").strip()
+    if not inn_ru:
+        return TranslateInnResponse(inn_en="", synonyms=[])
+    if _llm is None:
+        logger.warning("translate_inn_skipped", reason="Yandex LLM not configured")
+        return TranslateInnResponse(inn_en="", synonyms=[])
+    result = _llm.translate_inn_ru_to_en(inn_ru)
+    return TranslateInnResponse(
+        inn_en=result.get("inn_en") or "",
+        synonyms=result.get("synonyms") or [],
+    )
 
 
 @router.post("/search_sources", response_model=SearchSourcesResponse)

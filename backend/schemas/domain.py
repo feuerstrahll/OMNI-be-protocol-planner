@@ -156,7 +156,8 @@ class SynopsisCompleteness(BaseModel):
 class FullReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    inn: str
+    inn: str = Field(..., description="English INN (для поиска)")
+    inn_ru: Optional[str] = Field(None, description="МНН на русском (для отображения)")
     dosage_form: Optional[str] = None
     dose: Optional[str] = None
     protocol_id: Optional[str] = None

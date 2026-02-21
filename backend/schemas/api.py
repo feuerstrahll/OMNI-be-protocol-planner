@@ -22,7 +22,8 @@ from .common import (
 class SearchSourcesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    inn: str
+    inn: str = Field(..., description="English INN для PubMed")
+    inn_ru: Optional[str] = Field(None, description="МНН на русском для отображения/контекста")
     retmax: int = Field(10, ge=1, le=50)
 
 
@@ -35,10 +36,24 @@ class SearchSourcesResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+class TranslateInnRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    inn_ru: str = Field(..., description="МНН на русском (кириллица)")
+
+
+class TranslateInnResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    inn_en: str = Field("", description="English INN для PubMed")
+    synonyms: List[str] = Field(default_factory=list, description="Синонимы / варианты написания")
+
+
 class PKExtractionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    inn: str
+    inn: str = Field(..., description="English INN для PubMed/контекста")
+    inn_ru: Optional[str] = Field(None, description="МНН на русском для отображения")
     sources: List[str] = Field(..., description="List of PMIDs or PMCID:... identifiers")
 
 
@@ -195,7 +210,8 @@ class BuildDocxResponse(BaseModel):
 class RunPipelineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    inn: str
+    inn: str = Field(..., description="English INN для PubMed / DrugBank")
+    inn_ru: Optional[str] = Field(None, description="МНН на русском для синопсиса / LLM")
     dosage_form: Optional[str] = Field(None, description="Лекарственная форма (e.g. таблетки, капсулы)")
     dose: Optional[str] = Field(None, description="Дозировка (e.g. 500 mg)")
     retmax: int = Field(10, ge=1, le=50)

@@ -329,6 +329,7 @@ def run_pipeline(
 
     return FullReport(
         inn=req.inn,
+        inn_ru=getattr(req, "inn_ru", None),
         dosage_form=req.dosage_form,
         dose=req.dose,
         protocol_id=protocol_id,
