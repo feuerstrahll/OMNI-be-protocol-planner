@@ -115,8 +115,8 @@ class RegChecker:
         *,
         cv_info: Optional[CVInfo] = None,
     ) -> Dict[str, object]:
-        cv_value, cv_confirmed = _resolve_cv_value(pk_json, cv_input, cv_info)
-        t_half = _extract_pk_value(pk_json, "t1/2")
+        cv_value, cv_confirmed = self._resolve_cv_value(pk_json, cv_input, cv_info)
+        t_half = self._extract_pk_value(pk_json, "t1/2")
         return {
             "design": design,
             "cv_value": cv_value,
@@ -141,7 +141,7 @@ class RegChecker:
         warnings = self._collect_warning_codes(pk_json, validation_issues or [])
         t_half = self._extract_pk_value(pk_json, "t1/2", ignore_ambiguous=True)
         auc_name = self._first_metric_name(pk_json, "AUC")
-        cv_value, cv_confirmed = _resolve_cv_value(pk_json, cv_input, cv_info)
+        cv_value, cv_confirmed = self._resolve_cv_value(pk_json, cv_input, cv_info)
         if cv_info:
             cv_source = cv_info.cv_source or cv_info.source
         elif cv_input:
@@ -285,7 +285,9 @@ class RegChecker:
         validation_issues: List[ValidationIssue],
     ) -> List[str]:
         warnings: List[str] = []
-        warnings.extend(pk_json.warnings or [])
+        for w in pk_json.warnings or []:
+            if w is not None:
+                warnings.append(str(w))
 
         numeric_items = list(pk_json.pk_values) + list(pk_json.ci_values)
         missing_evidence = False
@@ -315,13 +317,14 @@ class RegChecker:
 
         for pk in pk_json.pk_values:
             for warn in pk.warnings or []:
-                if warn == "missing_unit":
+                warn_str = str(warn) if warn is not None else ""
+                if warn_str == "missing_unit":
                     warnings.append("unit_missing")
-                if warn == "unit_not_allowed":
+                if warn_str == "unit_not_allowed":
                     warnings.append("unit_suspect")
-                if warn == "unit_normalization_failed":
+                if warn_str == "unit_normalization_failed":
                     warnings.append("suspicious_conversion")
-                if "conflict_detected" in warn:
+                if "conflict_detected" in warn_str:
                     warnings.append("conflicting_values")
 
         for issue in validation_issues:
@@ -676,25 +679,18 @@ class RegChecker:
         meta = self._question_meta.get(rule_id) or {}
         return meta.get("category") or "general", meta.get("priority") or "medium"
 
-
-def _resolve_cv_value(
-    pk_json: PKExtractionResponse,
-    cv_input: Optional[CVInput],
-    cv_info: Optional[CVInfo],
-) -> Tuple[Optional[float], bool]:
-    if cv_info is not None:
-        return cv_info.value, bool(cv_info.confirmed_by_user)
-    if cv_input is not None:
-        return cv_input.cv.value, bool(cv_input.confirmed)
-    cv_from_pk = _extract_pk_value(pk_json, "CVintra")
-    return cv_from_pk, False
-
-
-def _extract_pk_value(pk_json: PKExtractionResponse, name: str) -> Optional[float]:
-    for pk in pk_json.pk_values:
-        if pk.name == name and pk.value is not None:
-            return pk.value
-    return None
+    def _resolve_cv_value(
+        self,
+        pk_json: PKExtractionResponse,
+        cv_input: Optional[CVInput],
+        cv_info: Optional[CVInfo],
+    ) -> Tuple[Optional[float], bool]:
+        if cv_info is not None:
+            return cv_info.value, bool(cv_info.confirmed_by_user)
+        if cv_input is not None:
+            return cv_input.cv.value, bool(cv_input.confirmed)
+        cv_from_pk = self._extract_pk_value(pk_json, "CVintra")
+        return cv_from_pk, False
 
 
 def _find_check(checks: List[dict], rule_id: str) -> Optional[dict]:

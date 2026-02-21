@@ -30,13 +30,15 @@ def fetch_pmc_sections(pmcid: str, sections: List[str] | None = None) -> str:
             if not _contains_any(sec_type, section_words) and not _contains_any(title, section_words):
                 continue
             for p in sec.findall(".//p"):
-                if p.text:
-                    texts.append(p.text.strip())
+                full_text = "".join(p.itertext()).strip()
+                if full_text:
+                    texts.append(full_text)
 
         if not texts:
             for p in root.findall(".//p"):
-                if p.text:
-                    texts.append(p.text.strip())
+                full_text = "".join(p.itertext()).strip()
+                if full_text:
+                    texts.append(full_text)
 
         for table in root.findall(".//table-wrap"):
             rows = table.findall(".//tr")

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Tuple
@@ -41,7 +41,7 @@ class PKExtractor:
             ),
         }
         self.ci_pattern = re.compile(
-            r"(?P<cl>90|95)\s*%?\s*CI[^\d]{0,10}\(?\s*(?P<low>\d+(?:\.\d+)?)\s*(?:-|–|to|,|;)\s*(?P<high>\d+(?:\.\d+)?)",
+            r"(?P<cl>90|95)\s*%?\s*CI[^\d]{0,10}\(?\s*(?P<low>\d+(?:\.\d+)?)\s*%?\s*(?:-|–|to|,|;)\s*(?P<high>\d+(?:\.\d+)?)\s*%?",
             re.IGNORECASE,
         )
         self.gmr_pattern = re.compile(

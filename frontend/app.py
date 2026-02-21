@@ -257,7 +257,7 @@ with col_meta2:
         "Дозировка",
         value="",
         key="dose",
-        help="Например: 500 mg, 10 mg/mL",
+        help="Например: 500 mg, 10 mg/mL. Если планируется регистрация нескольких дозировок дженерика (например, 5, 10, 20 мг), укажите максимальную (20 мг). Согласно принципам биовейвера, in vivo исследование проводится на максимальной дозировке (bracket approach).",
     )
 
 replacement_subjects_label = st.selectbox("Резервные испытуемые (замена выбывших)", ["Нет", "Да"], index=0)
@@ -281,6 +281,14 @@ with col_cond2:
         help="Однофазное / двухфазное / автовыбор моделью",
     )
     study_phase = STUDY_PHASE_RU_TO_API.get(study_phase_label)
+
+st.subheader("Особые свойства препарата")
+is_nti = st.checkbox(
+    "Узкий терапевтический индекс (NTI) / Высокотоксичный",
+    value=False,
+    key="nti_flag",
+    help="Выберите, если препарат токсичен (например, в онкологии) или требует жёсткого контроля дозы (варфарин, такролимус). Это ужесточит регуляторные проверки и повлияет на расчёт выборки.",
+)
 
 with st.expander("Предпочтительный дизайн и RSABE", expanded=False):
     preferred_design_label_idx = st.selectbox(
@@ -562,7 +570,7 @@ if st.button(
         "replacement_subjects": replacement_subjects,
         "visit_day_numbering": visit_day_numbering,
         "protocol_condition": protocol_condition,
-        "nti": st.session_state.get("nti_flag"),
+        "nti": is_nti,
         "study_phase": study_phase,
         "schedule_days": st.session_state.get("schedule_days") or None,
         "hospitalization_duration_days": st.session_state.get("hospitalization_duration_days") or None,
@@ -634,7 +642,7 @@ if pk_values_display:
 
 
 st.subheader("3) Дизайн исследования")
-nti_flag = st.checkbox("Препарат с узким терапевтическим индексом (NTI)", value=False, key="nti_flag")
+nti_flag = st.session_state.get("nti_flag", False)
 design_resp = st.session_state.get("design")
 design_from_report = _format_design(st.session_state.get("fullreport"), design_resp)
 pk_payload = pk
