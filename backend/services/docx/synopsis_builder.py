@@ -354,14 +354,15 @@ def _summarize_pk_values(pk_values: List[dict]) -> str:
 
 
 def _map_study_phase(phase: Any) -> str:
+    """БЭ: single/two-phase = периоды кроссовера (не фазы онкологии)."""
     if phase is None:
         return DEFAULT_PLACEHOLDER
     value = safe_str(phase)
     if value == DEFAULT_PLACEHOLDER:
         return DEFAULT_PLACEHOLDER
     lookup = {
-        "single": "однофазное",
-        "two-phase": "двухфазное",
+        "single": "однопериодное",
+        "two-phase": "двухпериодное",
         "auto": "по умолчанию",
     }
     return lookup.get(value, value)

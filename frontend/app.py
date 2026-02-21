@@ -11,13 +11,13 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 # Маппинг русских подписей в значения API
 PROTOCOL_CONDITION_RU_TO_API = {"": None, "натощак": "fasted", "после еды": "fed", "оба варианта": "both"}
 PROTOCOL_CONDITION_API_TO_RU = {None: "", "fasted": "натощак", "fed": "после еды", "both": "оба варианта"}
-STUDY_PHASE_RU_TO_API = {"автовыбор моделью": None, "однофазное": "single", "двухфазное": "two-phase"}
-STUDY_PHASE_OPTIONS_RU = ["автовыбор моделью", "однофазное", "двухфазное"]
+STUDY_PHASE_RU_TO_API = {"автовыбор моделью": None, "однопериодное": "single", "двухпериодное": "two-phase"}
+STUDY_PHASE_OPTIONS_RU = ["автовыбор моделью", "однопериодное", "двухпериодное"]
 PREFERRED_DESIGN_OPTIONS_RU = [
     ("Автовыбор", ""),
     ("2×2 кроссовер", "2x2_crossover"),
     ("репликат", "replicate"),
-    ("4-путёвый репликат", "4-way_replicate"),
+    ("4-кратная репликация", "4-way_replicate"),
     ("параллельный", "parallel"),
 ]
 
@@ -278,7 +278,7 @@ with col_cond2:
         "Тип исследования",
         STUDY_PHASE_OPTIONS_RU,
         index=0,
-        help="Однофазное / двухфазное / автовыбор моделью",
+        help="Однопериодное / двухпериодное (БЭ) или автовыбор моделью",
     )
     study_phase = STUDY_PHASE_RU_TO_API.get(study_phase_label)
 
@@ -295,14 +295,14 @@ with st.expander("Предпочтительный дизайн и RSABE", expan
         "Предпочтительный дизайн",
         options=[label for label, _ in PREFERRED_DESIGN_OPTIONS_RU],
         index=0,
-        help="Либо автовыбор моделью, либо один из вариантов: 2×2 кроссовер, репликат, 4-путёвый репликат, параллельный",
+        help="Либо автовыбор моделью, либо один из вариантов: 2×2 кроссовер, репликация, 4-кратная репликация, параллельный",
     )
     preferred_design = next((v for label, v in PREFERRED_DESIGN_OPTIONS_RU if label == preferred_design_label_idx), "").strip() or None
     rsabe_requested = st.checkbox(
         "Необходимость применения RSABE",
         value=False,
         key="rsabe_requested",
-        help="Если отмечено, система принудительно выберет репликатный дизайн для RSABE",
+        help="Если отмечено, система принудительно выберет Реплицированный дизайн для RSABE",
     )
 
 with st.expander("Дополнительные требования заказчика", expanded=False):
@@ -680,11 +680,22 @@ if design_clicked and pk_payload:
         }
     try:
         resp = api_post("/select_design", {"pk_json": pk_payload, "cv_input": cv_payload, "nti": nti_flag})
-        design_value = resp.get("recommendation") or resp.get("design") or "2x2 crossover"
-        st.session_state["design"] = design_value
-        st.success("Дизайн подобран")
-        design_from_report = _format_design(st.session_state.get("fullreport"), resp)
+        design_value = resp.get("recommendation") or resp.get("design")
+        if not design_value:
+            st.session_state["design"] = None
+            st.error(
+                "**Определение дизайна невозможно.** Ответ API не содержит recommendation/design "
+                "(например, сервис LLM недоступен). Для высоковариабельных препаратов (CV > 30%) или длинного T½ "
+                "подстановка 2×2 кроссовера недопустима. Выберите дизайн вручную в блоке «Предпочтительный дизайн» "
+                "и повторите Run pipeline, либо обратитесь к разработчику."
+            )
+            design_from_report = {}
+        else:
+            st.session_state["design"] = design_value
+            st.success("Дизайн подобран")
+            design_from_report = _format_design(st.session_state.get("fullreport"), resp)
     except Exception as exc:
+        st.session_state["design"] = None
         st.error(f"Ошибка дизайна: {exc}")
 elif design_clicked and not pk_payload:
     st.warning("Нет PK данных для выбора дизайна. Запустите pipeline или извлеките PK.")
@@ -947,7 +958,7 @@ def _build_markdown_synopsis(report: dict) -> str:
     _cond_ru = PROTOCOL_CONDITION_API_TO_RU.get(_cond, _cond or "—")
     lines.append(f"- **Режим приёма:** {_cond_ru}")
     _phase = report.get("study_phase")
-    _phase_ru = {"single": "однофазное", "two-phase": "двухфазное", "auto": "автовыбор"}.get(_phase, _phase or "—")
+    _phase_ru = {"single": "однопериодное", "two-phase": "двухпериодное", "auto": "автовыбор"}.get(_phase, _phase or "—")
     lines.append(f"- **Тип исследования:** {_phase_ru}")
     lines.append("")
     lines.append("## Обоснование дизайна")

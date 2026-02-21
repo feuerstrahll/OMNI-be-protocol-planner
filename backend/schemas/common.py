@@ -166,6 +166,7 @@ class CVInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     value: Optional[float] = None
+    # Legacy; kept in sync with cv_source via _sync_source. TODO: Remove 'source' in v2.
     source: Literal["reported", "derived_from_ci", "manual", "range", "unknown"] = "unknown"
     cv_source: Optional[Literal["reported", "derived_from_ci", "manual", "range", "unknown"]] = None
     parameter: Optional[Literal["AUC", "Cmax"]] = None

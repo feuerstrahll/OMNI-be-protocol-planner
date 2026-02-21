@@ -235,7 +235,7 @@ class RunPipelineRequest(BaseModel):
     protocol_condition: Optional[Literal["fed", "fasted", "both"]] = None
     nti: Optional[bool] = None
     study_phase: Optional[Literal["single", "two-phase", "auto"]] = Field(
-        None, description="Тип исследования: однофазное / двухфазное / автовыбор"
+        None, description="Тип исследования: однопериодное / двухпериодное (БЭ) или автовыбор"
     )
     schedule_days: Optional[float] = None
     hospitalization_duration_days: Optional[float] = None
