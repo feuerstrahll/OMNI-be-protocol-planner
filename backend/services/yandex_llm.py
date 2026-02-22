@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +10,46 @@ import requests
 
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_balanced_json_object(text: str) -> Optional[str]:
+    """Extract first balanced {...} object from text (ignore braces inside strings)."""
+    s = (text or "").strip()
+    i = s.find("{")
+    if i < 0:
+        return None
+    start = i
+    depth = 1
+    i += 1
+    in_dq = False
+    escape = False
+    while i < len(s) and depth > 0:
+        c = s[i]
+        if in_dq:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_dq = False
+            i += 1
+            continue
+        if c == '"':
+            in_dq = True
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+            i += 1
+            continue
+        if c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start : i + 1]
+            i += 1
+            continue
+        i += 1
+    return None
 
 
 def _is_valid_evidence_url(url: Optional[str]) -> bool:
@@ -90,7 +129,7 @@ class YandexLLMClient:
                             "You are an expert pharmacokinetics data extraction assistant. "
                             "Extract numeric PK values from the provided text and return ONLY valid JSON. "
                             f"Drug: {inn}\n\nText:\n{truncated}\n\n"
-                            "Return JSON strictly matching this structure:\n"
+                            "Return exactly one JSON object matching this structure (no markdown, no code fences):\n"
                             "{\n"
                             '  "pk_values": [\n'
                             '    {"name": "Cmax", "value": 245.0, "unit": "ng/mL", "evidence": [{"excerpt": "...", "pmid_or_url": "PMCID:123", "location": "sec:snippets"}]},\n'
@@ -100,10 +139,12 @@ class YandexLLMClient:
                             '  "ci_values": []\n'
                             "}\n"
                             "Rules:\n"
+                            "- Output ONLY this single JSON object. Do not repeat keys. Each array element is one object.\n"
+                            "- Maximum 20 items in pk_values and 20 in ci_values. Do not duplicate names/params.\n"
                             "- CVintra means intra-subject (within-subject) CV only\n"
                             "- If a value is missing, DO NOT invent it\n"
                             f"- {evidence_rules}"
-                            "- Output ONLY valid JSON, without Markdown blocks like ```json"
+                            "- No Markdown (no ```json). Valid JSON only."
                         ),
                     }
                 ],
@@ -125,20 +166,28 @@ class YandexLLMClient:
                 .get("message", {})
                 .get("text", "")
             ).strip()
+            logger.info("yandex_llm_raw_response: %s", (text_out[:800] + ("..." if len(text_out) > 800 else "")))
             parsed: Dict[str, Any] | None = None
             if text_out.startswith(("{", "[")):
                 try:
                     parsed = json.loads(text_out)
-                except Exception:
+                except Exception as e:
                     parsed = None
+                    logger.debug("yandex_llm_parse_direct_failed: %s", e)
             if parsed is None:
                 cleaned = text_out.replace("```json", "").replace("```", "").strip()
-                match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-                if match:
+                obj_str = _extract_balanced_json_object(cleaned)
+                if obj_str:
                     try:
-                        parsed = json.loads(match.group(0))
-                    except Exception:
+                        parsed = json.loads(obj_str)
+                    except Exception as e:
                         parsed = None
+                        logger.debug("yandex_llm_parse_json_block_failed: %s", e)
+            if parsed is None:
+                logger.warning(
+                    "llm_parse_failed: returned {}; raw snippet: %s",
+                    (text_out[:500] + ("..." if len(text_out) > 500 else "")),
+                )
             if parsed:
                 parsed = _filter_evidence_to_valid_urls(parsed)
             return parsed or {}
@@ -196,10 +245,10 @@ class YandexLLMClient:
                     parsed = None
             if parsed is None:
                 cleaned = text_out.replace("```json", "").replace("```", "").strip()
-                match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-                if match:
+                obj_str = _extract_balanced_json_object(cleaned)
+                if obj_str:
                     try:
-                        parsed = json.loads(match.group(0))
+                        parsed = json.loads(obj_str)
                     except Exception:
                         parsed = None
             if parsed is None:

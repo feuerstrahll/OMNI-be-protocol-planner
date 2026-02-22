@@ -5,6 +5,76 @@ from typing import Any, Dict, List, Tuple
 
 from backend.schemas import CIValue, Evidence, PKValue
 from backend.services.utils import normalize_space, safe_float
+from backend.services.pmc_fetcher import (
+    prepare_pmc_llm_contexts,
+    _TABLE_ROW_WITH_CI_AND_CV,
+)
+
+
+def _is_valid_evidence_url(url: Any) -> bool:
+    """Evidence is kept only if pmid_or_url starts with PMID:, PMCID:, or http."""
+    if url is None:
+        return False
+    s = (url if isinstance(url, str) else str(url)).strip().lower()
+    return s.startswith("pmid:") or s.startswith("pmcid:") or s.startswith("http")
+
+
+def normalize_llm_payload(llm_result: Any) -> Dict[str, Any]:
+    """Convert LLM response with pk_values/ci_values to flat keys expected by pipeline.
+
+    YandexLLMClient returns {"pk_values": [{"name": "CVintra", "value": 34, "unit": "%"}, ...], "ci_values": [...]}.
+    This returns a dict with CVintra, CI_low, CI_high, CI_param, n (None when missing).
+    """
+    out: Dict[str, Any] = {"CVintra": None, "CI_low": None, "CI_high": None, "CI_param": None, "n": None}
+    if isinstance(llm_result, str):
+        # LLM returned plain text; nothing to parse here.
+        return out
+    if not isinstance(llm_result, dict):
+        return out
+    pk_list = llm_result.get("pk_values")
+    if isinstance(pk_list, list):
+        for item in pk_list:
+            if not isinstance(item, dict):
+                continue
+            name_raw = (item.get("name") or "").strip()
+            name_l = name_raw.lower()
+            is_cv = name_l in ("cvintra", "cv") or "cvw" in name_l or "within" in name_l or "intra" in name_l
+            if not is_cv:
+                continue
+            v = item.get("value")
+            if v is not None:
+                try:
+                    out["CVintra"] = float(v)
+                except (TypeError, ValueError):
+                    pass
+            break
+    ci_list = llm_result.get("ci_values")
+    if isinstance(ci_list, list):
+        for item in ci_list:
+            if not isinstance(item, dict):
+                continue
+            low_raw = item.get("ci_low") if item.get("ci_low") is not None else item.get("CI_low")
+            high_raw = item.get("ci_high") if item.get("ci_high") is not None else item.get("CI_high")
+            low = safe_float(low_raw) if low_raw is not None else None
+            high = safe_float(high_raw) if high_raw is not None else None
+            if low is not None and high is not None:
+                param_raw = item.get("param") or item.get("CI_param") or item.get("name")
+                param_clean = param_raw.strip() if isinstance(param_raw, str) else param_raw
+                if isinstance(param_clean, str):
+                    param_clean = param_clean.capitalize() if param_clean.lower() == "cmax" else param_clean.upper()
+                valid_param = param_clean if param_clean in ("AUC", "Cmax") else None
+                out["CI_low"] = low
+                out["CI_high"] = high
+                out["CI_param"] = valid_param
+                out["n"] = item.get("n") or llm_result.get("n")
+                break
+    if out["n"] is None:
+        out["n"] = llm_result.get("n")
+    return out
+
+
+# Backward compatibility for tests/scripts
+_normalize_llm_pk_response = normalize_llm_payload
 
 
 class PKExtractor:
@@ -232,85 +302,201 @@ class PKExtractor:
             for source_id, text in abstracts.items():
                 if not source_id.startswith("PMCID:"):
                     continue
-                full_text = ""
+                supplementary_present = False
+                pmc_payload = {"snippets_text": "", "target_text": "", "full_text": text or "", "warnings": []}
                 if self.pmc_fetcher is not None:
                     try:
-                        full_text = self.pmc_fetcher(source_id)
+                        fetched = self.pmc_fetcher(source_id)
+                        if isinstance(fetched, dict):
+                            pmc_payload.update(fetched)
+                        else:
+                            pmc_payload["full_text"] = fetched or ""
                     except Exception:
-                        full_text = ""
-                if not full_text:
-                    full_text = text
-                llm_result = self.llm_client.extract_pk_from_text(full_text, inn="")
-                cv_val = llm_result.get("CVintra")
-                if cv_val is None:
-                    continue
-                try:
-                    cv_float = float(cv_val)
-                except Exception:
-                    continue
-                pmc_url = self._pmc_url(source_id)
-                evidence = Evidence(
-                    source_id=source_id,
-                    pmid_or_url=pmc_url,
-                    pmid=None,
-                    url=pmc_url,
-                    excerpt="Extracted via YandexGPT from PMC full text",
-                    location="full_text_llm",
-                )
-                llm_warnings = ["llm_extracted_requires_human_review"]
-                if source_id in ambiguous_sources:
-                    llm_warnings.append("ambiguous_condition")
-                pk_values.append(
-                    PKValue(
-                        name="CVintra",
-                        value=cv_float,
-                        unit="%",
-                        evidence=[evidence],
-                        warnings=llm_warnings,
-                        ambiguous_condition=(source_id in ambiguous_sources) or None,
-                    )
-                )
-                found_metrics.add("CVintra")
+                        pass
+                for w in pmc_payload.get("warnings") or []:
+                    if w and w not in self.last_warnings:
+                        self.last_warnings.append(w)
+                supplementary_present = bool(pmc_payload.get("supplementary_present"))
 
-                ci_low = llm_result.get("CI_low")
-                ci_high = llm_result.get("CI_high")
-                ci_param = llm_result.get("CI_param")
-                if ci_low is not None and ci_high is not None and ci_param in ("AUC", "Cmax"):
-                    try:
-                        ci_low_f = float(ci_low)
-                        ci_high_f = float(ci_high)
-                    except Exception:
-                        ci_low_f = None
-                        ci_high_f = None
-                    if ci_low_f is not None and ci_high_f is not None:
-                        ci_warnings = ["llm_extracted_requires_human_review"]
-                        if source_id in ambiguous_sources:
-                            ci_warnings.append("ambiguous_condition")
-                        ci_values.append(
-                            CIValue(
-                                param=ci_param,
-                                ci_low=ci_low_f,
-                                ci_high=ci_high_f,
-                                ci_type="ratio",
-                                confidence_level=0.90,
-                                n=llm_result.get("n"),
-                                design_hint=None,
-                                gmr=None,
-                                evidence=[
-                                    Evidence(
-                                        source_id=source_id,
-                                        pmid_or_url=pmc_url,
-                                        pmid=None,
-                                        url=pmc_url,
-                                        excerpt="Extracted via YandexGPT from PMC full text",
-                                        location="full_text_llm",
-                                    )
-                                ],
-                                warnings=ci_warnings,
-                                ambiguous_condition=(source_id in ambiguous_sources) or None,
+                contexts = prepare_pmc_llm_contexts(pmc_payload)
+                if not contexts and pmc_payload.get("full_text"):
+                    contexts = [("full_text", (pmc_payload.get("full_text") or "")[:12000])]
+
+                cv_found = False
+                ci_found = False
+                row_present_any = False
+                for loc_label, payload_text in contexts:
+                    if not payload_text or not payload_text.strip():
+                        continue
+
+                    row_m = _TABLE_ROW_WITH_CI_AND_CV.search(payload_text)
+                    if row_m:
+                        row_present_any = True
+
+                    llm_result = self.llm_client.extract_pk_from_text(
+                        payload_text, inn=inn or "", source_id=source_id, location=loc_label
+                    )
+                    flat = normalize_llm_payload(llm_result)
+
+                    cv_val = flat.get("CVintra")
+                    if cv_val is None:
+                        cv_fallback = None
+                        if row_m:
+                            try:
+                                cv_candidate = float(row_m.group(4))
+                                cv_fallback = cv_candidate if 1 <= cv_candidate <= 150 else None
+                            except Exception:
+                                cv_fallback = None
+                        if cv_fallback is not None:
+                            pmc_url = self._pmc_url(source_id)
+                            evidence = Evidence(
+                                source_id=source_id,
+                                pmid_or_url=pmc_url,
+                                pmid=None,
+                                url=pmc_url,
+                                excerpt=f"regex fallback from table row: {row_m.group(0)}" if row_m else "",
+                                location=loc_label,
                             )
-                        )
-                break
+                            warnings = ["regex_fallback_cv"]
+                            if source_id in ambiguous_sources:
+                                warnings.append("ambiguous_condition")
+                            pk_values.append(
+                                PKValue(
+                                    name="CVintra",
+                                    value=cv_fallback,
+                                    unit="%",
+                                    evidence=[evidence],
+                                    warnings=warnings,
+                                    ambiguous_condition=(source_id in ambiguous_sources) or None,
+                                )
+                            )
+                            if "regex_fallback_cv" not in self.last_warnings:
+                                self.last_warnings.append("regex_fallback_cv")
+                            found_metrics.add("CVintra")
+                            cv_found = True
+                            break
+
+                    if cv_val is not None and not cv_found:
+                        try:
+                            cv_float = float(cv_val)
+                        except Exception:
+                            cv_float = None
+                        if cv_float is not None:
+                            pmc_url = self._pmc_url(source_id)
+                            evidence = Evidence(
+                                source_id=source_id,
+                                pmid_or_url=pmc_url,
+                                pmid=None,
+                                url=pmc_url,
+                                excerpt=f"Extracted via LLM ({loc_label})",
+                                location=loc_label,
+                            )
+                            llm_warnings = ["llm_extracted_requires_human_review"]
+                            if source_id in ambiguous_sources:
+                                llm_warnings.append("ambiguous_condition")
+                            pk_values.append(
+                                PKValue(
+                                    name="CVintra",
+                                    value=cv_float,
+                                    unit="%",
+                                    evidence=[evidence],
+                                    warnings=llm_warnings,
+                                    ambiguous_condition=(source_id in ambiguous_sources) or None,
+                                )
+                            )
+                            found_metrics.add("CVintra")
+                            cv_found = True
+
+                    if flat.get("CI_low") is not None and flat.get("CI_high") is not None and not ci_found:
+                        ci_param = flat.get("CI_param")
+                        ci_low = flat.get("CI_low")
+                        ci_high = flat.get("CI_high")
+                        if ci_param in ("AUC", "Cmax"):
+                            try:
+                                ci_low_f = float(ci_low)
+                                ci_high_f = float(ci_high)
+                            except Exception:
+                                ci_low_f = ci_high_f = None
+                            if ci_low_f is not None and ci_high_f is not None:
+                                ci_warnings = ["llm_extracted_requires_human_review"]
+                                if source_id in ambiguous_sources:
+                                    ci_warnings.append("ambiguous_condition")
+                                pmc_url = self._pmc_url(source_id)
+                                ci_values.append(
+                                    CIValue(
+                                        param=ci_param,
+                                        ci_low=ci_low_f,
+                                        ci_high=ci_high_f,
+                                        ci_type="ratio",
+                                        confidence_level=0.90,
+                                        n=flat.get("n"),
+                                        design_hint=None,
+                                        gmr=None,
+                                        evidence=[
+                                            Evidence(
+                                                source_id=source_id,
+                                                pmid_or_url=pmc_url,
+                                                pmid=None,
+                                                url=pmc_url,
+                                                excerpt=f"Extracted via LLM ({loc_label})",
+                                                location=loc_label,
+                                            )
+                                        ],
+                                        warnings=ci_warnings,
+                                        ambiguous_condition=(source_id in ambiguous_sources) or None,
+                                    )
+                                )
+                                ci_found = True
+
+                    if not ci_found and row_m:
+                        try:
+                            ci_low_f = float(row_m.group(2))
+                            ci_high_f = float(row_m.group(3))
+                        except Exception:
+                            ci_low_f = ci_high_f = None
+                        param_raw = (row_m.group(1) or "").lower()
+                        ci_param = "Cmax" if "cmax" in param_raw else "AUC"
+                        if ci_low_f is not None and ci_high_f is not None:
+                            pmc_url = self._pmc_url(source_id)
+                            ci_warnings = ["regex_fallback_ci"]
+                            if source_id in ambiguous_sources:
+                                ci_warnings.append("ambiguous_condition")
+                            ci_values.append(
+                                CIValue(
+                                    param=ci_param,
+                                    ci_low=ci_low_f,
+                                    ci_high=ci_high_f,
+                                    ci_type="percent",
+                                    confidence_level=0.90,
+                                    n=None,
+                                    design_hint=None,
+                                    gmr=None,
+                                    evidence=[
+                                        Evidence(
+                                            source_id=source_id,
+                                            pmid_or_url=pmc_url,
+                                            pmid=None,
+                                            url=pmc_url,
+                                            excerpt=f"regex fallback from table row: {row_m.group(0)}",
+                                            location=loc_label,
+                                        )
+                                    ],
+                                    warnings=ci_warnings,
+                                    ambiguous_condition=(source_id in ambiguous_sources) or None,
+                                )
+                            )
+                            ci_found = True
+
+                    if cv_found:
+                        break
+
+                if not cv_found and supplementary_present and "data_may_be_in_supplementary" not in self.last_warnings:
+                    self.last_warnings.append("data_may_be_in_supplementary")
+                if row_present_any and not ci_found and "ci_present_but_not_extracted" not in self.last_warnings:
+                    # we saw CI bounds in table rows but never extracted CI
+                    self.last_warnings.append("ci_present_but_not_extracted")
+                if cv_found:
+                    break
 
         study_condition = self._final_study_condition(study_flags)
         if ambiguous_sources:
@@ -576,6 +762,10 @@ class PKExtractor:
         llm_pk_raw = llm_data.get("pk_values") or []
         llm_ci_raw = llm_data.get("ci_values") or []
 
+        # If LLM returned an empty JSON (no pk/ci), keep previously found values intact.
+        if not llm_pk_raw and not llm_ci_raw:
+            return pk_values, ci_values, found_metrics
+
         llm_pk_values: List[PKValue] = []
         for item in llm_pk_raw:
             try:
@@ -627,8 +817,12 @@ class PKExtractor:
 
     def _ensure_llm_evidence(self, pk_item: PKValue, source_id: str, text: str) -> None:
         if pk_item.evidence:
-            pk_item.evidence = [self._normalize_llm_evidence(ev, source_id) for ev in pk_item.evidence]
-            return
+            pk_item.evidence = [
+                self._normalize_llm_evidence(ev, source_id) for ev in pk_item.evidence
+            ]
+            pk_item.evidence = [e for e in pk_item.evidence if _is_valid_evidence_url(e.pmid_or_url)]
+            if pk_item.evidence:
+                return
         snippet, span = self._find_value_snippet(text, pk_item.value)
         if snippet:
             context_tags = self._context_tags(snippet)
@@ -654,8 +848,12 @@ class PKExtractor:
 
     def _ensure_llm_ci_evidence(self, ci_item: CIValue, source_id: str, text: str) -> None:
         if ci_item.evidence:
-            ci_item.evidence = [self._normalize_llm_evidence(ev, source_id) for ev in ci_item.evidence]
-            return
+            ci_item.evidence = [
+                self._normalize_llm_evidence(ev, source_id) for ev in ci_item.evidence
+            ]
+            ci_item.evidence = [e for e in ci_item.evidence if _is_valid_evidence_url(e.pmid_or_url)]
+            if ci_item.evidence:
+                return
         snippet, span = self._find_value_snippet(text, ci_item.ci_low)
         if snippet:
             context_tags = self._context_tags(snippet)

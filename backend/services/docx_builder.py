@@ -5,7 +5,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from backend.services.docx.synopsis_builder import AUTO_FILLED_HEADINGS, build_synopsis_sections
-from backend.services.docx.writer import write_synopsis_single_table_docx
+from backend.services.docx.writer import ensure_dqi_summary, write_synopsis_single_table_docx
 from backend.services.render_utils import (
     DEFAULT_PLACEHOLDER,
     safe_join,
@@ -126,19 +126,16 @@ def build_docx(all_json: Dict) -> str:
             )
 
     cv_info = report.get("cv") or report.get("cv_info") or {}
-    cv_value = safe_pct(_get(cv_info, "value"))
+    cv_value_raw = _get(cv_info, "value")
+    cv_range_low = _get(cv_info, "range_low")
+    cv_range_high = _get(cv_info, "range_high")
     cv_source = safe_str(
         _get(cv_info, "method") or _get(cv_info, "cv_source") or _get(cv_info, "source"),
         default=DEFAULT_PLACEHOLDER,
     )
     cv_confirmed = bool(_get(cv_info, "confirmed_by_human") or _get(cv_info, "confirmed_by_user")) if cv_info else False
-    cv_status_line = "CV: not available"
-    if _get(cv_info, "value") is not None:
-        cv_status_line = f"CV: {cv_value}"
-    if not cv_info:
-        cv_status_line = "CV: not available"
-    cv_confirmation_line = "CV not confirmed (N_det disabled)" if cv_info and not cv_confirmed else ""
-    cv_ci_low, cv_ci_high, cv_ci_n = _find_ci_fields(ci_values)
+    cv_conf_label = safe_str(_get(cv_info, "confidence"), default=DEFAULT_PLACEHOLDER)
+    cv_conf_score = _get(cv_info, "confidence_score")
 
     design = report.get("design") or (report.get("study") or {}).get("design") or {}
     design_recommendation = safe_str(
@@ -149,33 +146,31 @@ def build_docx(all_json: Dict) -> str:
 
     sample_det = report.get("sample_size_det") or _get(report.get("sample_size") or {}, "n_det")
     allow_n_det = _get(data_quality, "allow_n_det")
-    n_det_status = "N_det not computed (requires confirmed CV)"
-    n_det_total = DEFAULT_PLACEHOLDER
-    n_det_rand = DEFAULT_PLACEHOLDER
-    n_det_screen = DEFAULT_PLACEHOLDER
-    n_det_details_parts: List[str] = []
-    if sample_det:
-        n_det_status = ""
-        n_det_total = safe_num(_get(sample_det, "n_total") or _get(sample_det, "n_analysis"))
-        n_det_rand = safe_num(_get(sample_det, "n_rand"))
-        n_det_screen = safe_num(_get(sample_det, "n_screen"))
-        n_det_cv = safe_pct(_get(sample_det, "cv"))
-        n_det_power = safe_pct(_get(sample_det, "power"))
-        n_det_alpha = safe_pct(_get(sample_det, "alpha"))
-        n_det_dropout = safe_pct(_get(sample_det, "dropout"))
-        n_det_screen_fail = safe_pct(_get(sample_det, "screen_fail"))
-        if n_det_cv != DEFAULT_PLACEHOLDER:
-            n_det_details_parts.append(f"CV={n_det_cv}")
-        if n_det_power != DEFAULT_PLACEHOLDER:
-            n_det_details_parts.append(f"power={n_det_power}")
-        if n_det_alpha != DEFAULT_PLACEHOLDER:
-            n_det_details_parts.append(f"alpha={n_det_alpha}")
-        if n_det_dropout != DEFAULT_PLACEHOLDER:
-            n_det_details_parts.append(f"dropout={n_det_dropout}")
-        if n_det_screen_fail != DEFAULT_PLACEHOLDER:
-            n_det_details_parts.append(f"screen-fail={n_det_screen_fail}")
-    if allow_n_det is False:
-        n_det_status = "N_det is not computed due to Data Quality (Red Flag) / missing primary endpoints."
+    dq_reasons_list = _get(data_quality, "reasons") or []
+    n_det_total = safe_num(_get(sample_det, "n_total") or _get(sample_det, "n_analysis"))
+    n_det_rand = safe_num(_get(sample_det, "n_rand"))
+    n_det_screen = safe_num(_get(sample_det, "n_screen"))
+    n_det_power = safe_pct(_get(sample_det, "power"))
+    n_det_alpha = safe_pct(_get(sample_det, "alpha"))
+    n_det_dropout = safe_pct(_get(sample_det, "dropout"))
+    n_det_screen_fail = safe_pct(_get(sample_det, "screen_fail"))
+    n_det_reason_parts: List[str] = []
+    if not sample_det:
+        if cv_value_raw is None and cv_range_low is None and cv_range_high is None:
+            n_det_reason_parts.append("CV unavailable")
+        elif (_get(cv_info, "cv_source") or _get(cv_info, "source")) in ("range", "variability_range") or (
+            cv_range_low is not None and cv_range_high is not None
+        ):
+            n_det_reason_parts.append("CV not eligible for N_det (range provided; risk mode)")
+        elif allow_n_det is False:
+            if any("Missing primary PK endpoints" in str(r) for r in dq_reasons_list):
+                n_det_reason_parts.append("required PK endpoints missing (Cmax/AUC)")
+            else:
+                n_det_reason_parts.append("N_det blocked by data quality (allow_n_det=False)")
+        elif _get(cv_info, "requires_human_confirm") and not cv_confirmed:
+            n_det_reason_parts.append("CV not eligible for N_det (requires confirmation / low confidence)")
+        else:
+            n_det_reason_parts.append("N_det not computed (insufficient inputs)")
 
     sample_risk = report.get("sample_size_risk") or _get(report.get("sample_size") or {}, "n_risk")
     n_risk_status = "N_risk not computed (requires CV range/distribution)"
@@ -196,21 +191,68 @@ def build_docx(all_json: Dict) -> str:
     protocol_condition = safe_str(report.get("protocol_condition") or (report.get("study") or {}).get("protocol_condition"))
     if not protocol_condition:
         protocol_condition = DEFAULT_PLACEHOLDER
-    dosing_condition_line = (
-        f"Dosing condition: {protocol_condition.upper()}"
-        if protocol_condition and protocol_condition != DEFAULT_PLACEHOLDER
-        else DEFAULT_PLACEHOLDER
+
+    calc_alpha = n_det_alpha if sample_det else safe_pct(_get(report, "alpha"))
+    calc_power = n_det_power if sample_det else safe_pct(_get(report, "power"))
+    calc_dropout = n_det_dropout if sample_det else safe_pct(_get(report, "dropout"))
+    calc_screen_fail = n_det_screen_fail if sample_det else safe_pct(_get(report, "screen_fail"))
+
+    sample_lines: List[str] = []
+    sample_lines.append(f"Design: {design_recommendation}")
+    sample_lines.append(
+        f"Calc params: alpha={calc_alpha}, power={calc_power}, dropout={calc_dropout}, screen-fail={calc_screen_fail}"
     )
-    n_det_line = f"N_det: {n_det_total}"
-    if n_det_rand != DEFAULT_PLACEHOLDER or n_det_screen != DEFAULT_PLACEHOLDER:
-        n_det_line = f"{n_det_line} (rand: {n_det_rand}, screen: {n_det_screen})"
-    if n_det_details_parts:
-        n_det_line = f"{n_det_line}; " + ", ".join(n_det_details_parts)
-    sample_size_line = n_det_status or n_det_line
-    if n_risk_status:
-        sample_size_line = f"{sample_size_line}; {n_risk_status}"
+    cv_line_parts: List[str] = []
+    if cv_range_low is not None or cv_range_high is not None:
+        cv_line_parts.append(f"CV range: {safe_pct(cv_range_low)}-{safe_pct(cv_range_high)}")
+    elif cv_value_raw is not None:
+        cv_line_parts.append(f"CV: {safe_pct(cv_value_raw)}")
     else:
-        sample_size_line = f"{sample_size_line}; N_risk targets: {n_risk_targets}"
+        cv_line_parts.append("CV: unavailable")
+    if cv_source != DEFAULT_PLACEHOLDER:
+        cv_line_parts.append(f"source={cv_source}")
+    cv_flags: List[str] = []
+    cv_flags.append("confirmed_by_user" if cv_confirmed else "not confirmed")
+    eligible_flag = (
+        allow_n_det
+        and cv_value_raw is not None
+        and cv_range_low is None
+        and cv_range_high is None
+    )
+    cv_flags.append(f"eligible_for_n_det={'yes' if eligible_flag else 'no'}")
+    if cv_conf_label != DEFAULT_PLACEHOLDER:
+        cv_flags.append(f"confidence={cv_conf_label}")
+    if cv_conf_score is not None:
+        try:
+            cv_flags.append(f"confidence_score={float(cv_conf_score):.2f}")
+        except Exception:
+            cv_flags.append(f"confidence_score={cv_conf_score}")
+    cv_line_parts.append("; ".join(cv_flags))
+    sample_lines.append("CV info: " + " | ".join(cv_line_parts))
+
+    if sample_det:
+        sample_lines.append(
+            f"N_det: total={n_det_total}; rand={n_det_rand}; screen={n_det_screen}"
+        )
+        det_warn = safe_join(_get(sample_det, "warnings") or [], default="")
+        if det_warn:
+            sample_lines.append(f"N_det notes: {det_warn}")
+    else:
+        reason_line = "; ".join(n_det_reason_parts) if n_det_reason_parts else "N_det not computed"
+        sample_lines.append(f"N_det not computed: {reason_line}")
+
+    if sample_risk:
+        risk_line = f"N_risk targets: {n_risk_targets}"
+        if n_risk_p_success != DEFAULT_PLACEHOLDER:
+            risk_line = f"{risk_line}; p_success: {n_risk_p_success}"
+        if n_risk_notes != DEFAULT_PLACEHOLDER:
+            risk_line = f"{risk_line}; notes: {n_risk_notes}"
+        sample_lines.append(risk_line)
+    elif n_risk_status:
+        sample_lines.append(n_risk_status)
+
+    sample_size_line = "\n".join([line for line in sample_lines if line])
+
     synopsis_sections = build_synopsis_sections(report, dq_summary, open_questions_table, sample_size_line)
 
     os.makedirs("output", exist_ok=True)
@@ -220,6 +262,9 @@ def build_docx(all_json: Dict) -> str:
     except Exception as exc:
         warning = f"DOCX_BUILD_FAILED: {type(exc).__name__}: {exc}"
         raise DocxRenderError(warning, warnings=[warning]) from exc
+
+    # Ensure DQI block is explicitly present as paragraphs (not only table)
+    ensure_dqi_summary(out_path, dq_summary, dq_reasons_top)
     return out_path
 
 

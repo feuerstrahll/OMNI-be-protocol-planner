@@ -1,8 +1,7 @@
 ﻿from __future__ import annotations
 
-from docx import Document
-
 from backend.services.docx_builder import build_docx
+from backend.services.docx.writer import extract_docx_text
 from backend.services.synopsis_requirements import REQUIRED_HEADINGS
 
 
@@ -17,7 +16,6 @@ def test_docx_has_required_headings():
         "open_questions": [],
     }
     path = build_docx(report)
-    doc = Document(path)
-    text = "\n".join(p.text for p in doc.paragraphs)
+    text = extract_docx_text(path)
     for heading in REQUIRED_HEADINGS:
         assert heading in text

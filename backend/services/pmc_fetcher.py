@@ -7,20 +7,33 @@ from xml.etree import ElementTree
 
 import requests
 
+_TABLE_ROW_WITH_CI_AND_CV = re.compile(
+    r"(?m)^(Cmax|AUC0[-–]t|AUC0[-–](?:inf|∞)|AUC)\s+.*?"
+    r"(\d+(?:\.\d+)?)\s*(?:–|-|to|,|;)\s*(\d+(?:\.\d+)?)"
+    r"\s+(\d+(?:\.\d+)?)",
+    re.I,
+)
+
 
 def fetch_pmc_sections(pmcid: str) -> Dict[str, object]:
     """Fetch PMC XML and return structured text for LLM escalation strategy.
 
-    Fetches the article and looks for triggers in all sections except References/Appendix.
+    Fetches the article and looks for triggers in all sections except References/Appendix
+    and except supplement sections (sec-type/title containing "supplement").
+    Supplement sections are not included in full_text, target_text, or snippets_text,
+    so when supplementary_present is True, callers should surface the warning
+    "data_may_be_in_supplementary" — it is returned in the "warnings" list for that reason.
+
     Returns dict with:
-      - snippets_text: concatenated sniper snippets (or "")
+      - snippets_text: concatenated snippet text (or "")
       - target_text: joined Results/Pharmacokinetics/Statistical sections and tables
-      - full_text: all collected body text (sections + tables)
-      - supplementary_present: bool
+      - full_text: all collected body text (sections + tables; no supplement content)
+      - supplementary_present: bool — True if article has supplementary-material
+      - warnings: list of str — includes "data_may_be_in_supplementary" when supplementary_present
     """
     numeric_id = _normalize_pmcid(pmcid)
     if not numeric_id:
-        return {"snippets_text": "", "target_text": "", "full_text": "", "supplementary_present": False}
+        return {"snippets_text": "", "target_text": "", "full_text": "", "supplementary_present": False, "warnings": []}
 
     # eFetch for db=pmc; PMC may update E-utilities (e.g. Feb 2026) — eFetch expected to remain.
     url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
@@ -29,10 +42,10 @@ def fetch_pmc_sections(pmcid: str) -> Dict[str, object]:
         resp = requests.get(url, params=params, timeout=20)
         time.sleep(0.35)
         if resp.status_code != 200:
-            return {"snippets_text": "", "target_text": "", "full_text": "", "supplementary_present": False}
+            return {"snippets_text": "", "target_text": "", "full_text": "", "supplementary_present": False, "warnings": []}
         root = ElementTree.fromstring(resp.content)
     except Exception:
-        return {"snippets_text": "", "target_text": "", "full_text": "", "supplementary_present": False}
+        return {"snippets_text": "", "target_text": "", "full_text": "", "supplementary_present": False, "warnings": []}
 
     supplementary_present = bool(
         root.findall(".//supplementary-material")
@@ -40,7 +53,10 @@ def fetch_pmc_sections(pmcid: str) -> Dict[str, object]:
     )
     body = root.find(".//body")
     if body is None:
-        return {"snippets_text": "", "target_text": "", "full_text": "", "supplementary_present": supplementary_present}
+        return {
+            "snippets_text": "", "target_text": "", "full_text": "", "supplementary_present": supplementary_present,
+            "warnings": ["data_may_be_in_supplementary"] if supplementary_present else [],
+        }
 
     parent_map = _build_parent_map(root)
 
@@ -124,12 +140,77 @@ def fetch_pmc_sections(pmcid: str) -> Dict[str, object]:
 
     full_text = "\n\n".join([s["text"] for s in sec_texts] + [t["as_text"] for t in table_docs])
 
+    warnings: List[str] = []
+    if supplementary_present:
+        warnings.append("data_may_be_in_supplementary")
+
     return {
         "snippets_text": snippets_text,
         "target_text": target_text,
         "full_text": full_text,
         "supplementary_present": supplementary_present,
+        "warnings": warnings,
     }
+
+
+def _prioritize_snippet_blocks(snippets_text: str, max_chars: int = 12000) -> str:
+    blocks = [b.strip() for b in snippets_text.split("\n---\n") if b.strip()]
+
+    def score(block: str) -> int:
+        b = block.lower()
+        s = 0
+        if re.search(r"\bwithin[- ]subject\b|cv\s*[_w]*\s*%|%\s*cv|\bcv\b", b):
+            s += 5
+        if re.search(r"\b90\s*%?\s*ci\b|\bci\b|\bgmr\b|geometric mean ratio", b):
+            s += 3
+        if re.search(r"\bcmax\b|\bauc\b|tmax|t1/2|half[- ]life", b):
+            s += 1
+        if "location:" in b and any(k in b for k in ["results", "methods", "statistic", "pharmacokinetic"]):
+            s += 2
+        if "location:" in b and any(k in b for k in ["introduction", "discussion"]):
+            s -= 1
+        return s
+
+    blocks.sort(key=score, reverse=True)
+    out = []
+    total = 0
+    for b in blocks:
+        add = b + "\n---\n"
+        if total + len(add) > max_chars:
+            break
+        out.append(b)
+        total += len(add)
+    return "\n---\n".join(out)[:max_chars]
+
+
+def prepare_pmc_llm_contexts(pmc_payload: dict, max_chars: int = 12000) -> List[Tuple[str, str]]:
+    snippets = (pmc_payload.get("snippets_text") or "").strip()
+    target = (pmc_payload.get("target_text") or "").strip()
+    full = (pmc_payload.get("full_text") or "").strip()
+    contexts: List[Tuple[str, str]] = []
+
+    if snippets:
+        snippets = _prioritize_snippet_blocks(snippets, max_chars=max_chars)
+        if snippets:
+            contexts.append(("sec:snippets", snippets[:max_chars]))
+
+    if target:
+        contexts.append(("sec:results_pk_stats", target[:max_chars]))
+
+    if full:
+        intervals: List[Tuple[int, int]] = []
+        window = 800
+        for m in _TABLE_ROW_WITH_CI_AND_CV.finditer(full):
+            start = max(0, m.start() - window)
+            end = min(len(full), m.end() + window)
+            intervals.append((start, end))
+        merged = _merge_intervals(intervals)
+        chunks = [full[s:e].strip() for s, e in merged if full[s:e].strip()]
+        full_windows = "\n---\n".join(chunks) if chunks else full[:max_chars]
+        if full_windows:
+            contexts.append(("full_text", full_windows[:max_chars]))
+
+    return contexts
 
 
 def _merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
