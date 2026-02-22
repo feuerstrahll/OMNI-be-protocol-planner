@@ -171,6 +171,9 @@ class CVInfo(BaseModel):
     cv_source: Optional[Literal["reported", "derived_from_ci", "manual", "range", "unknown"]] = None
     parameter: Optional[Literal["AUC", "Cmax"]] = None
     confidence: Optional[Literal["low", "medium", "high"]] = None
+    confidence_score: Optional[float] = Field(
+        None, ge=0.0, le=1.0, description="Numeric 0..1 for trust policy (N_det without human confirmation). Set in cv_gate."
+    )
     requires_human_confirm: bool = True
     confirmed_by_user: bool = False
     evidence: List[Evidence] = Field(default_factory=list)

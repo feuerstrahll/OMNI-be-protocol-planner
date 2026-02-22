@@ -109,8 +109,17 @@ def compute_data_quality(
 
     cv_source = cv_info.cv_source or cv_info.source or "unknown"
     is_range = cv_source in ("range", "variability_range")
-    allow_n_det = level in ("green", "yellow") and cv_info.confirmed_by_user and not is_range
-    prefer_n_risk = level == "red" or is_range or not cv_info.confirmed_by_user
+    # Trust policy: allow N_det if user confirmed, or if confidence_score >= threshold and not doubtful
+    from backend.services.cv_trust import AUTO_CV_THRESHOLD, is_cv_doubtful
+
+    _cv_score = cv_info.confidence_score if cv_info.confidence_score is not None else 0.0
+    _cv_eligible_auto = _cv_score >= AUTO_CV_THRESHOLD and not is_cv_doubtful(cv_info)
+    allow_n_det = (
+        level in ("green", "yellow")
+        and (cv_info.confirmed_by_user or _cv_eligible_auto)
+        and not is_range
+    )
+    prefer_n_risk = level == "red" or is_range or not (cv_info.confirmed_by_user or _cv_eligible_auto)
     if hard_red:
         allow_n_det = False
         prefer_n_risk = True

@@ -247,3 +247,19 @@ class RunPipelineRequest(BaseModel):
     gender_requirement: Optional[str] = Field(None, description="Гендерный состав (e.g. мужчины, женщины, оба пола)")
     age_range: Optional[str] = Field(None, description="Возрастной диапазон (e.g. 18-55)")
     additional_constraints: Optional[str] = Field(None, description="Иные ограничения заказчика")
+    output_mode: Literal["draft", "final"] = Field(
+        "draft",
+        description="draft: only warnings/open questions, report always returned. final: 422 if blockers (policy-driven).",
+    )
+    final_require_n_det: bool = Field(
+        True,
+        description="When output_mode=final: require at least N_det or N_risk; block if both missing.",
+    )
+    final_require_cv_point: bool = Field(
+        False,
+        description="When output_mode=final: if True, block when CV point estimate missing (even with range). If False, allow risk (block only CV_absent_completely).",
+    )
+    final_require_primary_endpoints: bool = Field(
+        True,
+        description="When output_mode=final: require Cmax and AUC (from pk_values or ci_values); block if missing.",
+    )

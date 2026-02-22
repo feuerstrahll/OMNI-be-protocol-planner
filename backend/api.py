@@ -73,6 +73,10 @@ design_engine = DesignEngine("backend/rules/design_rules.yaml")
 variability_model = VariabilityModel("backend/rules/variability_rules.yaml")
 reg_checker = RegChecker("backend/rules/reg_rules.yaml")
 
+# Backward compatibility for tests expecting a private helper
+def _filter_pk_ci_for_calculation(pk_values, ci_values, protocol_condition):
+    return filter_pk_ci_for_calculation(pk_values, ci_values, protocol_condition)
+
 
 @router.post("/translate_inn", response_model=TranslateInnResponse)
 def translate_inn(req: TranslateInnRequest) -> TranslateInnResponse:
@@ -218,7 +222,7 @@ def health_r() -> dict:
 
 @router.post("/run_pipeline", response_model=FullReport)
 def run_pipeline(req: RunPipelineRequest) -> FullReport:
-    return run_pipeline_service(
+    report, blockers = run_pipeline_service(
         req,
         pubmed_client=pubmed_client,
         pk_extractor=pk_extractor,
@@ -228,6 +232,12 @@ def run_pipeline(req: RunPipelineRequest) -> FullReport:
         reg_checker=reg_checker,
         logger=logger,
     )
+    if req.output_mode == "final" and blockers:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Report is not ready for finalization", "blockers": blockers},
+        )
+    return report
 
 
 app = FastAPI(title="OMNI BE Protocol Planner")

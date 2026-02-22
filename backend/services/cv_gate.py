@@ -5,9 +5,21 @@ import os
 from typing import List, Tuple
 
 from backend.schemas import CIValue, CVInfo, OpenQuestion, PKExtractionResponse, PKValue, VariabilityInput
+from backend.services import cv_trust
 from backend.services.powertost_runner import health as powertost_health
 from backend.services.powertost_runner import run_cvfromci
 from backend.services.variability_model import VariabilityModel
+
+
+def _apply_confidence_penalties(score: float, warnings: List[str]) -> float:
+    """Apply red-flag penalties; forbid flags zero out score."""
+    if any(w in cv_trust.DOUBTFUL_FORBID for w in warnings):
+        return 0.0
+    if any(w.startswith(cv_trust.DOUBTFUL_PREFIX) for w in warnings):
+        return 0.0
+    if "llm_extracted_requires_human_review" in warnings:
+        score = max(0.0, score - cv_trust.PENALTY_LLM_REVIEW)
+    return score
 
 
 def select_cv_info(
@@ -26,7 +38,8 @@ def select_cv_info(
                 value=float(manual_cv),
                 source="manual",
                 cv_source="manual",
-                confidence="medium",
+                confidence="high",
+                confidence_score=_apply_confidence_penalties(1.0, []),
                 requires_human_confirm=True,
                 confirmed_by_user=bool(cv_confirmed),
                 evidence=[
@@ -44,17 +57,22 @@ def select_cv_info(
 
     reported = _find_reported_cv(pk_json.pk_values)
     if reported:
+        wr = reported.warnings or []
+        # Direct regex → 0.9; LLM from full text → 0.65 (penalties applied below)
+        base = 0.65 if "llm_extracted_requires_human_review" in wr else 0.9
+        score = _apply_confidence_penalties(base, wr)
         return (
             CVInfo(
                 value=reported.value,
                 source="reported",
                 cv_source="reported",
                 parameter=None,
-                confidence="medium",
+                confidence="high" if score >= 0.85 else ("medium" if score >= 0.5 else "low"),
+                confidence_score=score,
                 requires_human_confirm=True,
                 confirmed_by_user=bool(cv_confirmed),
                 evidence=reported.evidence,
-                warnings=reported.warnings or [],
+                warnings=wr,
             ),
             open_questions,
         )
@@ -73,15 +91,18 @@ def select_cv_info(
         )
     )
     cv_mode = range_info.cv_range.mode.value if range_info.cv_range.mode else None
+    range_warnings = range_info.warnings or []
+    score = _apply_confidence_penalties(0.4, range_warnings)
     cv_info = CVInfo(
         value=cv_mode,
         source="range",
         cv_source="range",
-        confidence=range_info.confidence,
+        confidence=range_info.confidence if range_info.confidence else ("medium" if score >= 0.5 else "low"),
+        confidence_score=score,
         requires_human_confirm=True,
         confirmed_by_user=bool(cv_confirmed),
         evidence=[],
-        warnings=range_info.warnings or [],
+        warnings=range_warnings,
         range_low=range_info.cv_range.low.value,
         range_high=range_info.cv_range.high.value,
         range_mode=cv_mode,
@@ -137,6 +158,7 @@ def _derive_from_ci(
                 source="derived_from_ci",
                 cv_source="derived_from_ci",
                 confidence="low",
+                confidence_score=0.0,
                 requires_human_confirm=True,
                 confirmed_by_user=bool(cv_confirmed),
                 evidence=ci.evidence,
@@ -155,13 +177,16 @@ def _derive_from_ci(
     if health.get("powertost_ok"):
         cv_val, runner_warnings = run_cvfromci(ci.ci_low, ci.ci_high, int(ci.n), "2x2")
         warnings.extend(runner_warnings)
+        base_score = 0.8 if cv_val is not None else 0.0
+        score = _apply_confidence_penalties(base_score, warnings)
         return (
             CVInfo(
                 value=cv_val,
                 source="derived_from_ci",
                 cv_source="derived_from_ci",
                 parameter=ci.param,
-                confidence="medium" if cv_val is not None else "low",
+                confidence="high" if score >= 0.85 else ("medium" if score >= 0.5 else "low"),
+                confidence_score=score,
                 requires_human_confirm=True,
                 confirmed_by_user=bool(cv_confirmed),
                 evidence=ci.evidence,
@@ -174,13 +199,15 @@ def _derive_from_ci(
         cv_val = _approx_cv_from_ci(ci.ci_low, ci.ci_high, ci.n or 0, ci.confidence_level)
         warnings.append("approximation_for_testing_only")
         warnings.append("powertost_unavailable")
+        score = _apply_confidence_penalties(0.5, warnings)
         return (
             CVInfo(
                 value=cv_val,
                 source="derived_from_ci",
                 cv_source="derived_from_ci",
                 parameter=ci.param,
-                confidence="low",
+                confidence="medium" if score >= 0.5 else "low",
+                confidence_score=score,
                 requires_human_confirm=True,
                 confirmed_by_user=bool(cv_confirmed),
                 evidence=ci.evidence,
@@ -202,13 +229,14 @@ def _derive_from_ci(
         CVInfo(
             value=None,
             source="derived_from_ci",
-                cv_source="derived_from_ci",
-                parameter=ci.param,
-                confidence="low",
-                requires_human_confirm=True,
-                confirmed_by_user=bool(cv_confirmed),
-                evidence=ci.evidence,
-                warnings=warnings,
+            cv_source="derived_from_ci",
+            parameter=ci.param,
+            confidence="low",
+            confidence_score=0.0,
+            requires_human_confirm=True,
+            confirmed_by_user=bool(cv_confirmed),
+            evidence=ci.evidence,
+            warnings=warnings,
         ),
         open_questions,
     )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from backend.schemas import (
     CVInfo,
@@ -42,7 +42,7 @@ def run_pipeline(
     variability_model,
     reg_checker,
     logger=None,
-) -> FullReport:
+) -> Tuple[FullReport, List[str]]:
     logger = logger or configure_logging()
 
     # 1) Sources
@@ -178,11 +178,25 @@ def run_pipeline(
         required_inputs_missing=design_resp.required_inputs_missing or [],
     )
 
-    # 6) Sample size (deterministic)
+    # 6) Sample size (deterministic) — trust policy: allow N_det without human confirmation if confidence_score high
+    from backend.services.cv_trust import AUTO_CV_THRESHOLD, is_cv_doubtful
+
+    allow_cv_for_n_det = False
+    if cv_info.value is not None:
+        if cv_info.confirmed_by_user:
+            allow_cv_for_n_det = True
+        else:
+            cv_score = cv_info.confidence_score if cv_info.confidence_score is not None else 0.0
+            doubtful = is_cv_doubtful(cv_info)
+            allow_cv_for_n_det = cv_score >= AUTO_CV_THRESHOLD and not doubtful
+            if allow_cv_for_n_det:
+                warnings.append("cv_used_for_n_det_without_human_confirmation")
+
     sample_det = None
-    if cv_info.value is not None and data_quality.allow_n_det:
+    if allow_cv_for_n_det and data_quality.allow_n_det:
         cv_input = _cv_input_from_cvinfo(cv_info)
         if cv_input:
+            cv_input.confirmed = True  # eligible for N_det (even if not human-confirmed)
             sample_resp = calc_sample_size(
                 design_decision.recommendation,
                 cv_input,
@@ -243,6 +257,15 @@ def run_pipeline(
     protocol_id, protocol_status = _resolve_protocol_id(req.protocol_id, req.inn)
 
     open_questions_list = list(reg_resp.open_questions or []) + cv_questions
+    if allow_cv_for_n_det and not cv_info.confirmed_by_user and cv_info.value is not None:
+        open_questions_list.append(
+            OpenQuestion(
+                category="cv",
+                question="Confirm CV (used provisionally for N_det without human confirmation).",
+                priority="medium",
+                linked_rule_id="CV_PROVISIONAL_N_DET",
+            )
+        )
     if req.protocol_condition and "condition_tagging_missing" in calc_notes:
         open_questions_list.append(
             OpenQuestion(
@@ -327,7 +350,44 @@ def run_pipeline(
         }
     )
 
-    return FullReport(
+    blockers: List[str] = []
+    if req.output_mode != "final":
+        pass  # draft: no blockers, never 422
+    else:
+        # Policy-driven blockers for final
+        require_n_det = getattr(req, "final_require_n_det", True)
+        require_cv_point = getattr(req, "final_require_cv_point", False)
+        require_primary = getattr(req, "final_require_primary_endpoints", True)
+
+        if require_n_det and sample_det is None and sample_risk is None:
+            blockers.append("N_not_computed")
+            if not data_quality.allow_n_det:
+                blockers.append("n_det_blocked_by_dqi")
+            elif cv_info.value is None:
+                pass
+            else:
+                blockers.append("n_det_not_computed")
+
+        has_cv_range = cv_info.range_low is not None or cv_info.range_high is not None
+        if cv_info.value is None:
+            if not has_cv_range:
+                blockers.append("CV_absent_completely")
+            elif require_cv_point:
+                blockers.append("CV_point_estimate_missing")
+
+        if not pk_values and not ci_values:
+            blockers.append("no_pk_or_ci_extracted")
+        elif require_primary:
+            pk_names = {getattr(p, "name", "") for p in pk_values}
+            ci_params = {getattr(c, "param", "") for c in ci_values}
+            has_cmax = "Cmax" in pk_names or "Cmax" in ci_params
+            has_auc = bool(pk_names & {"AUC", "AUC0-t", "AUC0-inf"}) or "AUC" in ci_params
+            if not has_cmax:
+                blockers.append("missing_primary_pk_Cmax")
+            if not has_auc:
+                blockers.append("missing_primary_pk_AUC")
+
+    report = FullReport(
         inn=req.inn,
         inn_ru=getattr(req, "inn_ru", None),
         dosage_form=req.dosage_form,
@@ -363,6 +423,7 @@ def run_pipeline(
         reg_check_summary=reg_summary,
         synopsis_completeness=SynopsisCompleteness(**synopsis_completeness),
     )
+    return report, blockers
 
 
 def filter_pk_ci_for_calculation(
