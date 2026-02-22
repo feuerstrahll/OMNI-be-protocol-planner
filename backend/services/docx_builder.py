@@ -293,9 +293,26 @@ def _yes_no(value: Any) -> str:
 def _build_sources_table(sources: List[dict]) -> List[dict]:
     rows: List[dict] = []
     for src in sources:
+        id_type = _get(src, "id_type")
+        id_val = _get(src, "id")
+        if id_type and id_val is not None and safe_str(id_val).strip():
+            s = safe_str(id_val).strip()
+            if id_type == "URL":
+                ref_id = f"URL:{s}"
+            elif id_type == "PMCID":
+                ref_id = f"PMCID:PMC{s}" if s.isdigit() else f"PMCID:{s}"
+            else:
+                ref_id = f"{id_type}:{s}"
+        else:
+            ref_id = safe_str(_get(src, "ref_id"))
+            if not ref_id or ref_id == DEFAULT_PLACEHOLDER:
+                if _get(src, "pmcid"):
+                    ref_id = f"PMCID:{safe_str(_get(src, 'pmcid')).lstrip('PMC')}"
+                else:
+                    ref_id = f"PMID:{safe_str(_get(src, 'pmid'))}"
         rows.append(
             {
-                "pmid": safe_str(_get(src, "pmid")),
+                "pmid": ref_id,
                 "title": safe_str(_get(src, "title")),
                 "year": safe_num(_get(src, "year")),
                 "type_tags": safe_join(_get(src, "type_tags") or []),

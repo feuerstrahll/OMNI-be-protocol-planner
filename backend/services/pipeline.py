@@ -55,7 +55,7 @@ def run_pipeline(
         logger.error("search_sources_failed", error=str(exc))
         warnings.append("NCBI E-utilities request failed.")
 
-    selected_sources = req.selected_sources or [s.pmid for s in sources]
+    selected_sources = req.selected_sources or [s.ref_id for s in sources]
 
     # 2) PK extraction
     pk_values: list = []

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from backend.services.render_utils import DEFAULT_PLACEHOLDER, safe_join, safe_num, safe_str
+
+logger = logging.getLogger(__name__)
 from backend.services.synopsis_requirements import HEADING_FIELD_MAP, REQUIRED_HEADINGS
 
 
@@ -105,9 +108,13 @@ def build_synopsis_sections(
         "Прием лекарств, влияющих на PK, в период скрининга/исследования.\n"
         "Беременность или лактация."
     )
+    # safety_default — дефолтный текст, если план мониторинга не пришёл из отчёта
     safety_default = (
-        "Мониторинг НЯ/СНЯ, витальных показателей, ЭКГ и лабораторных параметров "
-        "на протяжении всего исследования и периода наблюдения."
+        "Контроль безопасности у здоровых добровольцев включает лабораторные анализы крови и мочи, "
+        "витальные показатели (частота сердечных сокращений, частота дыхания, артериальное давление), "
+        "регистрацию ЭКГ, а также мониторинг НЯ/СНЯ. "
+        "Оценки выполняются до приема каждого препарата (преддоза) и в определенные протоколом исследования "
+        "временные точки после приема, а также при выписке/на визите завершения периода и в период наблюдения."
     )
     ethics_default = (
         "Исследование проводится в соответствии с GCP и Хельсинкской декларацией; "
@@ -124,7 +131,22 @@ def build_synopsis_sections(
         if heading == "Качество данных (DQI)":
             value = dq_summary or value
         elif heading == "Регуляторные замечания / Open Questions":
-            value = safe_join([q.get("question") for q in open_questions_table], default=DEFAULT_PLACEHOLDER)
+            questions_raw = [q.get("question") for q in open_questions_table] if open_questions_table else []
+            questions: List[str] = []
+            seen = set()
+            for raw in questions_raw:
+                text = safe_str(raw, default="")
+                if not text:
+                    continue
+                text = " ".join(text.split())
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                questions.append(text)
+            if questions:
+                value = "\n".join(f"- {q}" for q in questions)
+            else:
+                value = DEFAULT_PLACEHOLDER
         elif heading == "Размер выборки":
             value = sample_size_line or value
         elif heading == "Лекарственная форма и дозировка":
@@ -164,7 +186,7 @@ def build_synopsis_sections(
             rand_text = safe_str(randomization, default="")
             if not rand_text or rand_text == DEFAULT_PLACEHOLDER:
                 rand_text = _default_randomization(rec_design, sequences_text)
-            parts.append(f"Рандомизация: {rand_text}")
+            parts.append(rand_text)
             value = "; ".join(parts)
         elif heading == "Исследуемая популяция":
             gender = safe_str(report.get("gender_requirement") or study.get("gender_requirement"))
@@ -183,10 +205,12 @@ def build_synopsis_sections(
             if sources:
                 refs = []
                 for i, s in enumerate(sources, 1):
-                    pmid = safe_str(_get(s, "pmid"))
+                    ref_id = safe_str(_get(s, "ref_id"))
+                    if not ref_id:
+                        ref_id = _format_source_ref(s)
                     title = safe_str(_get(s, "title"))
                     year = safe_str(_get(s, "year"))
-                    refs.append(f"{i}. {title} ({year}) PMID:{pmid}")
+                    refs.append(f"{i}. {title} ({year}) {ref_id}")
                 value = "\n".join(refs)
             else:
                 value = "Источники не указаны."
@@ -217,7 +241,10 @@ def build_synopsis_sections(
             if _is_missing_value(value):
                 value = exclusion_default
         elif heading == "Фармакокинетические параметры":
-            if _is_missing_value(value):
+            if isinstance(value, str):
+                if _is_missing_value(value):
+                    value = _summarize_pk_values(pk_values)
+            else:
                 value = _summarize_pk_values(pk_values)
         elif heading == "Биоаналитические методы":
             if _is_missing_value(value):
@@ -231,6 +258,8 @@ def build_synopsis_sections(
         elif heading == "План мониторинга безопасности":
             if _is_missing_value(value):
                 value = safety_default
+            else:
+                value = _augment_safety_plan(value, safety_default)
         elif heading == "Этические и регуляторные аспекты":
             if _is_missing_value(value):
                 value = ethics_default
@@ -261,19 +290,36 @@ def build_synopsis_sections(
         elif heading == "Статистические методы":
             if _is_missing_value(value):
                 value = (
-                    "Дисперсионный анализ (ANOVA) логарифмически преобразованных PK-параметров. "
-                    "Расчёт 90% ДИ для отношения геометрических средних Test/Reference. "
-                    "Критерий биоэквивалентности: 80.00% – 125.00% (EAEU, Decision 85)."
+                    "Лог-преобразование AUC и Cmax; ANOVA на log-scale с фиксированными факторами sequence, period, treatment "
+                    "и случайным subject(sequence). 90% ДИ для отношения геометрических средних Test/Reference; "
+                    "критерий биоэквивалентности 80.00–125.00% (Решение 85 ЕАЭС)."
                 )
 
         sections[heading] = _format_heading_value(value)
+
+    # Мини-проверка: план мониторинга безопасности должен содержать привязку к преддозе и временным точкам
+    safety_text = sections.get("План мониторинга безопасности") or ""
+    if safety_text and safety_text != DEFAULT_PLACEHOLDER:
+        has_pre = "до приема" in safety_text or "преддоза" in safety_text
+        has_post = "после приема" in safety_text or "временные точки" in safety_text
+        if not has_pre or not has_post:
+            logger.warning(
+                "План мониторинга безопасности должен содержать привязку: «до приема»/«преддоза» и «после приема»/«временные точки». "
+                "Текущий текст: %s",
+                safety_text[:200] + "..." if len(safety_text) > 200 else safety_text,
+            )
+
     return sections
 
 
-def _as_list(value: Any) -> List[dict]:
+def _as_list(value: Any) -> List[Any]:
     if value is None:
         return []
-    return list(value)
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    return [value]
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -282,6 +328,38 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _format_source_ref(src: Any) -> str:
+    """Ref for bibliography: PMID:12345678, PMCID:PMC1234567, or URL:<link>. No PMID:PMCID:."""
+    id_type = _get(src, "id_type")
+    id_val = _get(src, "id")
+    if id_type and id_val is not None:
+        s = safe_str(id_val).strip()
+        if not s:
+            return f"{id_type}:"
+        if id_type == "URL":
+            return f"URL:{s}"
+        if id_type == "PMCID":
+            return f"PMCID:PMC{s}" if s.isdigit() else f"PMCID:{s}"
+        if id_type == "PMID":
+            return f"PMID:{s}"
+        return f"{id_type}:{s}"
+    pmcid = _get(src, "pmcid")
+    if pmcid and safe_str(pmcid).strip():
+        p = safe_str(pmcid).strip().lstrip("PMC")
+        return f"PMCID:PMC{p}" if p.isdigit() else f"PMCID:{pmcid}"
+    p = safe_str(_get(src, "pmid")).strip()
+    if not p:
+        return DEFAULT_PLACEHOLDER
+    if p.startswith("http://") or p.startswith("https://"):
+        return f"URL:{p}"
+    if p.upper().startswith("PMCID:"):
+        rest = p.split(":", 1)[1].strip().lstrip("PMC")
+        return f"PMCID:PMC{rest}" if rest.isdigit() else f"PMCID:{rest}"
+    if p.upper().startswith("PMID:"):
+        return f"PMID:{p.split(':', 1)[1].strip()}"
+    return f"PMID:{p}"
 
 
 def _format_heading_value(value: Any) -> str:
@@ -319,6 +397,29 @@ def _get_path(data: Any, path: str) -> Any:
         else:
             current = getattr(current, part, None)
     return current
+
+
+def _augment_safety_plan(value: Any, fallback: str) -> str:
+    """Дополняет план мониторинга безопасности обязательной фразой о преддозе и временных точках, если её нет."""
+    text = safe_str(value, default="").strip()
+
+    if not text or text == DEFAULT_PLACEHOLDER:
+        return fallback
+
+    required = (
+        "Оценки выполняются до приема каждого препарата (преддоза) и в определенные протоколом исследования "
+        "временные точки после приема."
+    )
+
+    has_pre = ("до приема" in text) or ("перед приемом" in text) or ("преддоз" in text)
+    has_post = ("после приема" in text) or ("временные точки" in text) or ("таймпо" in text)
+
+    if not (has_pre and has_post):
+        if not text.endswith((".", "!", "?")):
+            text += "."
+        text += " " + required
+
+    return text
 
 
 def _is_missing_value(value: Any) -> bool:

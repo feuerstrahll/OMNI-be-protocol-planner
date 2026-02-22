@@ -57,11 +57,22 @@ def write_synopsis_single_table_docx(
     p_heading.paragraph_format.space_before = Pt(12)
     p_heading.paragraph_format.space_after = Pt(6)
     if sources:
-        for i, src in enumerate(sources, 1):
-            pmid = safe_str(_get(src, "pmid"))
+        deduped_sources: List[dict] = []
+        seen = set()
+        for src in sources:
             title_src = safe_str(_get(src, "title"))
             year_src = safe_str(_get(src, "year"))
-            doc.add_paragraph(f"{i}. {title_src} ({year_src}) PMID:{pmid}")
+            ref_id = _source_ref_id(src)
+            key = (title_src.lower(), year_src, ref_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped_sources.append(src)
+        for i, src in enumerate(deduped_sources, 1):
+            ref_id = _source_ref_id(src)
+            title_src = safe_str(_get(src, "title"))
+            year_src = safe_str(_get(src, "year"))
+            doc.add_paragraph(f"{i}. {title_src} ({year_src}) {ref_id}")
     else:
         doc.add_paragraph("Источники не указаны.")
 
@@ -114,15 +125,24 @@ def ensure_dqi_summary(docx_path: str, dq_summary: str, dq_reasons: str) -> None
         from docx import Document
     except Exception:
         return
-    text = extract_docx_text(docx_path)
-    if "Data Quality summary:" in text:
-        return
     doc = Document(docx_path)
-    doc.add_heading("Качество данных (DQI)", level=1)
-    doc.add_paragraph(f"Data Quality summary: {dq_summary}")
+    summary_text = safe_str(dq_summary, default=DEFAULT_PLACEHOLDER)
+    if summary_text == DEFAULT_PLACEHOLDER:
+        return
+    parts = [summary_text]
     if dq_reasons and dq_reasons != DEFAULT_PLACEHOLDER:
-        doc.add_paragraph(f"Причины: {dq_reasons}")
-    doc.save(docx_path)
+        reasons_text = safe_str(dq_reasons, default="")
+        if reasons_text and reasons_text != DEFAULT_PLACEHOLDER:
+            parts.append(f"Причины: {reasons_text}")
+    cell_text = "\n".join(parts)
+    for table in doc.tables:
+        for row in table.rows:
+            if not row.cells:
+                continue
+            if row.cells[0].text.strip() == "Качество данных (DQI)":
+                row.cells[1].text = cell_text
+                doc.save(docx_path)
+                return
 
 
 def extract_docx_text(docx_path: str) -> str:
@@ -149,3 +169,45 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _source_ref_id(src: Any) -> str:
+    """Bibliography ref: PMID:12345678, PMCID:PMC1234567, or URL:<link>. No PMID:PMCID: glue."""
+    id_type = _get(src, "id_type")
+    id_val = _get(src, "id")
+    if id_type and id_val is not None:
+        s = safe_str(id_val).strip()
+        if not s:
+            return f"{id_type}:"
+        if id_type == "URL":
+            return f"URL:{s}"
+        if id_type == "PMCID":
+            return f"PMCID:PMC{s}" if s.isdigit() else f"PMCID:{s}"
+        if id_type == "PMID":
+            return f"PMID:{s}"
+        return f"{id_type}:{s}"
+    ref_id = _get(src, "ref_id")
+    if ref_id and safe_str(ref_id).strip():
+        return _format_reference_id(ref_id)
+    pmcid = _get(src, "pmcid")
+    if pmcid and safe_str(pmcid).strip():
+        p = safe_str(pmcid).strip().lstrip("PMC")
+        return f"PMCID:PMC{p}" if p.isdigit() else f"PMCID:{pmcid}"
+    return _format_reference_id(_get(src, "pmid"))
+
+
+def _format_reference_id(raw_id: Any) -> str:
+    text = safe_str(raw_id).strip()
+    if text == DEFAULT_PLACEHOLDER:
+        return f"PMID:{text}"
+    if text.startswith("http://") or text.startswith("https://"):
+        return f"URL:{text}"
+    upper = text.upper()
+    if upper.startswith("PMCID:"):
+        rest = text.split(":", 1)[1].strip().lstrip("PMC")
+        return f"PMCID:PMC{rest}" if rest.isdigit() else f"PMCID:{rest}"
+    if upper.startswith("PMID:"):
+        return f"PMID:{text.split(':', 1)[1].strip()}"
+    if upper.startswith("URL:"):
+        return f"URL:{text.split(':', 1)[1].strip()}"
+    return f"PMID:{text}"

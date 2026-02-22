@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 class Evidence(BaseModel):
@@ -67,16 +67,70 @@ class NumericValue(BaseModel):
     evidence: List[Evidence] = Field(default_factory=list)
 
 
+SourceIdType = Literal["PMID", "PMCID", "URL"]
+
+
 class SourceCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    pmid: str
+    id_type: SourceIdType = Field(..., description="Type of identifier: PMID, PMCID, or URL")
+    id: str = Field(..., description="Clean identifier without prefix (e.g. 123, not PMID:123)")
+    url: Optional[str] = Field(None, description="Source URL")
     title: str
     year: Optional[int] = None
+    journal: Optional[str] = Field(None, description="Journal name when available")
     type_tags: List[Literal["BE", "PK", "review"]] = Field(default_factory=list)
     species: Optional[Literal["human", "animal"]] = None
     feeding: Optional[Literal["fasted", "fed"]] = None
-    url: Optional[str] = None
+    alt_ids: Optional[List[str]] = Field(None, description="Other ids for same article, e.g. [PMCID:123] when canonical is PMID")
+
+    @computed_field
+    @property
+    def ref_id(self) -> str:
+        """Canonical display id for API/UI: PMID:123 or PMCID:123 (no mixed junk)."""
+        return f"{self.id_type}:{self.id}"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_id_from_legacy(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        if payload.get("id_type") and payload.get("id") is not None:
+            return payload
+        ref = (payload.get("ref_id") or "").strip()
+        if ref.upper().startswith("PMCID:"):
+            payload["id_type"] = "PMCID"
+            payload["id"] = ref.split(":", 1)[1].strip().lstrip("PMC")
+        elif ref.upper().startswith("PMID:"):
+            payload["id_type"] = "PMID"
+            payload["id"] = ref.split(":", 1)[1].strip()
+        elif ref.startswith("http"):
+            payload["id_type"] = "URL"
+            payload["id"] = ref
+        elif ref:
+            payload["id_type"] = "PMID"
+            payload["id"] = ref
+        else:
+            leg_pmcid = payload.get("pmcid")
+            leg_pmid = payload.get("pmid")
+            if leg_pmcid is not None and str(leg_pmcid).strip():
+                payload["id_type"] = "PMCID"
+                payload["id"] = str(leg_pmcid).strip().lstrip("PMC")
+            elif leg_pmid is not None and str(leg_pmid).strip():
+                p = str(leg_pmid).strip()
+                if p.upper().startswith("PMCID:"):
+                    payload["id_type"] = "PMCID"
+                    payload["id"] = p.split(":", 1)[1].strip().lstrip("PMC")
+                else:
+                    payload["id_type"] = "PMID"
+                    payload["id"] = p.replace("PMID:", "").strip()
+            else:
+                payload.setdefault("id_type", "PMID")
+                payload.setdefault("id", "")
+        for key in ("ref_id", "pmid", "pmcid"):
+            payload.pop(key, None)
+        return payload
 
 
 StudyCondition = Literal["fed", "fasted", "unknown"]

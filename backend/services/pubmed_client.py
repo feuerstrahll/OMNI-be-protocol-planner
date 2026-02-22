@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from xml.etree import ElementTree
 
 from backend.schemas import SourceCandidate
@@ -13,6 +13,109 @@ from backend.services.utils import (
     request_json_with_cache,
     request_text_with_cache,
 )
+
+
+# 2-step search: if Step A returns fewer than this, run Step B (broader)
+_MIN_RESULTS_STEP_A = 3
+
+# Thematic markers: PK/BE/forms/quality (must appear in query)
+_THEMATIC_TERMS = (
+    "bioequivalence[tiab] OR bioavailability[tiab] OR pharmacokinetics[tiab] OR "
+    "pharmacokinetics[MeSH Terms] OR "
+    "\"delayed release\"[tiab] OR enteric[tiab] OR \"enteric-coated\"[tiab] OR "
+    "formulation[tiab] OR capsule[tiab] OR tablet[tiab] OR "
+    "dissolution[tiab] OR generic[tiab] OR "
+    "\"healthy volunteers\"[tiab] OR \"healthy subjects\"[tiab] OR crossover[tiab] OR "
+    "Cmax[tiab] OR AUC[tiab]"
+)
+
+# Anti-topics: exclude (probe/DDI/veterinary etc.)
+_ANTI_TERMS = (
+    "phenotyping[tiab] OR phenotype[tiab] OR probe[tiab] OR cocktail[tiab] OR "
+    "microdose[tiab] OR veterinary[tiab] OR "
+    "horse[tiab] OR equine[tiab] OR cat[tiab] OR feline[tiab] OR dog[tiab] OR canine[tiab] OR "
+    "rat[tiab] OR mice[tiab] OR mouse[tiab] OR pigs[tiab] OR swine[tiab]"
+)
+
+# PMC uses [Title/Abstract] for text fields
+_PMC_THEMATIC = (
+    "bioequivalence[Title/Abstract] OR bioavailability[Title/Abstract] OR pharmacokinetics[Title/Abstract] OR "
+    "\"delayed release\"[Title/Abstract] OR enteric[Title/Abstract] OR \"enteric-coated\"[Title/Abstract] OR "
+    "formulation[Title/Abstract] OR capsule[Title/Abstract] OR tablet[Title/Abstract] OR "
+    "dissolution[Title/Abstract] OR generic[Title/Abstract] OR "
+    "\"healthy volunteers\"[Title/Abstract] OR \"healthy subjects\"[Title/Abstract] OR crossover[Title/Abstract] OR "
+    "Cmax[Title/Abstract] OR AUC[Title/Abstract]"
+)
+_PMC_ANTI = (
+    "phenotyping[Title/Abstract] OR phenotype[Title/Abstract] OR probe[Title/Abstract] OR cocktail[Title/Abstract] OR "
+    "microdose[Title/Abstract] OR veterinary[Title/Abstract] OR "
+    "horse[Title/Abstract] OR equine[Title/Abstract] OR cat[Title/Abstract] OR feline[Title/Abstract] OR "
+    "dog[Title/Abstract] OR canine[Title/Abstract] OR rat[Title/Abstract] OR mice[Title/Abstract] OR "
+    "mouse[Title/Abstract] OR pigs[Title/Abstract] OR swine[Title/Abstract]"
+)
+
+# Species: only humans (classic PubMed filter)
+_HUMANS_ONLY = "NOT (animals[mh] NOT humans[mh])"
+
+# Scoring: theme keywords (+3 in title, +1 in abstract)
+_THEME_KEYWORDS = (
+    "bioequivalence", "bioavailability", "pharmacokinetics", "delayed release", "enteric",
+    "enteric-coated", "formulation", "capsule", "tablet", "dissolution", "generic",
+    "healthy volunteers", "healthy subjects", "crossover", "cmax", "auc",
+)
+# Must-have for +2 (any of these)
+_MUST_KEYWORDS = ("delayed-release", "delayed release", "enteric", "dissolution")
+# Anti: -10 in title, -5 only in abstract
+_ANTI_KEYWORDS = ("phenotyping", "phenotype", "probe", "cocktail", "microdose")
+# Score threshold: drop articles below this
+_SCORE_THRESHOLD = 3
+
+# Official/regulatory sources (always appended to search_sources). INN-specific URLs for omeprazole.
+_OFFICIAL_SOURCES_OMEPRAZOLE = (
+    (
+        "FDA label (Prilosec / omeprazole delayed-release)",
+        "https://www.accessdata.fda.gov/drugsatfda_docs/label/2023/022056s026lbl.pdf",
+    ),
+    (
+        "EMA SmPC (Losec / omeprazole)",
+        "https://www.ema.europa.eu/en/medicines/human/EPAR/losec",
+    ),
+    (
+        "DailyMed (generic omeprazole delayed-release)",
+        "https://dailymed.nlm.nih.gov/dailymed/search.cfm?query=omeprazole+delayed+release",
+    ),
+    (
+        "BNF (NICE) omeprazole dosing",
+        "https://bnf.nice.org.uk/drugs/omeprazole/",
+    ),
+)
+
+
+def _get_official_sources(inn: str) -> List[SourceCandidate]:
+    """Return 4 official/regulatory sources (id_type=URL). Always included in /search_sources."""
+    inn_lower = (inn or "").strip().lower()
+    if inn_lower == "omeprazole":
+        items = _OFFICIAL_SOURCES_OMEPRAZOLE
+    else:
+        # Generic search URLs for other INNs
+        enc = __import__("urllib.parse").quote(inn_lower or "drug")
+        items = (
+            (f"FDA label ({inn_lower})", f"https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?event=overview.processSearch&term={enc}"),
+            (f"EMA SmPC ({inn_lower})", "https://www.ema.europa.eu/en/medicines/medicines-human-use"),
+            (f"DailyMed ({inn_lower})", f"https://dailymed.nlm.nih.gov/dailymed/search.cfm?query={enc}"),
+            (f"BNF (NICE) {inn_lower} dosing", f"https://bnf.nice.org.uk/search/?q={enc}"),
+        )
+    return [
+        SourceCandidate(
+            id_type="URL",
+            id=url,
+            url=url,
+            title=title,
+            year=None,
+            journal=None,
+        )
+        for title, url in items
+    ]
 
 
 class PubMedClient:
@@ -70,23 +173,77 @@ class PubMedClient:
             result[uid] = item
         return result
 
-    def search_sources(self, inn: str, retmax: int = 10) -> Tuple[str, List[SourceCandidate], List[str]]:
-        query = (
-            f"{inn}[Title/Abstract] AND "
-            f"(bioequivalence[Title/Abstract] OR "
-            f"\"healthy volunteers\"[Title/Abstract] OR "
-            f"\"healthy subjects\"[Title/Abstract] OR "
-            f"\"crossover\"[Title/Abstract]) AND "
-            f"(pharmacokinetics[Title/Abstract] OR Cmax[Title/Abstract] OR AUC[Title/Abstract] OR pharmacokinetics[MeSH Terms])"
+    def _build_pubmed_query_step_a(self, inn: str) -> str:
+        """Step A: high precision — INN in title or as MeSH major topic."""
+        inn_esc = inn.strip()
+        return (
+            f"(({inn_esc}[ti] OR {inn_esc}[majr]) AND "
+            f"({_THEMATIC_TERMS}) AND {_HUMANS_ONLY} AND "
+            f"NOT ({_ANTI_TERMS}))"
         )
+
+    def _build_pubmed_query_step_b(self, inn: str) -> str:
+        """Step B: expansion — INN in title/abstract."""
+        inn_esc = inn.strip()
+        return (
+            f"(({inn_esc}[tiab]) AND "
+            f"({_THEMATIC_TERMS}) AND {_HUMANS_ONLY} AND "
+            f"NOT ({_ANTI_TERMS}))"
+        )
+
+    def _build_pmc_query(self, inn: str) -> str:
+        """PMC: title/abstract + thematic + anti (PMC has no [mh] species filter)."""
+        inn_esc = inn.strip()
+        return (
+            f"({inn_esc}[Title/Abstract]) AND "
+            f"({_PMC_THEMATIC}) AND "
+            f"NOT ({_PMC_ANTI})"
+        )
+
+    def search_sources(self, inn: str, retmax: int = 10) -> Tuple[str, List[SourceCandidate], List[str]]:
         warnings: List[str] = []
         sources: List[SourceCandidate] = []
+        seen_ref_ids: set = set()
+        seen_title_year: set = set()
+        used_query = ""
 
-        pubmed_ids = self._esearch("pubmed", query, retmax)
-        pmc_ids = self._esearch("pmc", query, retmax)
+        def _dedupe_add(candidate: SourceCandidate) -> None:
+            if candidate.ref_id in seen_ref_ids:
+                return
+            key = (normalize_space(candidate.title).lower()[:120], candidate.year)
+            if key in seen_title_year:
+                return
+            seen_ref_ids.add(candidate.ref_id)
+            seen_title_year.add(key)
+            if self._is_noise_title(candidate.title):
+                return
+            sources.append(candidate)
 
-        if not pubmed_ids and not pmc_ids:
-            warnings.append("No PubMed/PMC records found via E-utilities.")
+        inn_clean = (inn or "").strip()
+        if not inn_clean:
+            warnings.append("INN is empty.")
+            return "", sources, warnings
+
+        # Step A (high precision): INN in title or MeSH major
+        query_a = self._build_pubmed_query_step_a(inn_clean)
+        pubmed_ids = self._esearch("pubmed", query_a, retmax)
+        used_query = query_a
+
+        # Step B (expansion) if Step A returned too few
+        if len(pubmed_ids) < _MIN_RESULTS_STEP_A:
+            query_b = self._build_pubmed_query_step_b(inn_clean)
+            ids_b = self._esearch("pubmed", query_b, retmax)
+            seen_pmid = set(pubmed_ids)
+            for pid in ids_b:
+                if pid not in seen_pmid:
+                    pubmed_ids.append(pid)
+                    seen_pmid.add(pid)
+            used_query = query_b
+            if ids_b:
+                warnings.append("Step B (title/abstract) was used to expand results.")
+
+        if not pubmed_ids:
+            warnings.append("No PubMed records found (Step A and B).")
 
         pubmed_summary = self._esummary("pubmed", pubmed_ids)
         for pmid, item in pubmed_summary.items():
@@ -96,17 +253,26 @@ class PubMedClient:
             type_tags = self._infer_type_tags(title)
             species = self._infer_species(title)
             feeding = self._infer_feeding(title)
-            sources.append(
+            journal = normalize_space(item.get("fulljournalname") or item.get("source") or "")
+            _dedupe_add(
                 SourceCandidate(
-                    pmid=str(pmid),
+                    id_type="PMID",
+                    id=str(pmid),
+                    url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
                     title=title,
                     year=int(year) if year else None,
+                    journal=journal or None,
                     type_tags=type_tags,
                     species=species,
                     feeding=feeding,
-                    url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
                 )
             )
+
+        # PMC: single query (title/abstract + thematic + anti)
+        pmc_query = self._build_pmc_query(inn_clean)
+        pmc_ids = self._esearch("pmc", pmc_query, retmax)
+        if not pubmed_ids and not pmc_ids:
+            warnings.append("No PubMed/PMC records found via E-utilities.")
 
         pmc_summary = self._esummary("pmc", pmc_ids)
         for pmcid, item in pmc_summary.items():
@@ -116,31 +282,166 @@ class PubMedClient:
             type_tags = self._infer_type_tags(title)
             species = self._infer_species(title)
             feeding = self._infer_feeding(title)
-            sources.append(
-                SourceCandidate(
-                    pmid=f"PMCID:{pmcid}",
-                    title=title,
-                    year=int(year) if year else None,
-                    type_tags=type_tags,
-                    species=species,
-                    feeding=feeding,
-                    url=f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/",
-                )
+            if self._is_noise_title(title):
+                continue
+            key = (title.lower()[:120], int(year) if year else None)
+            if key in seen_title_year:
+                continue
+            cand = SourceCandidate(
+                id_type="PMCID",
+                id=str(pmcid).lstrip("PMC"),
+                url=f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/",
+                title=title,
+                year=int(year) if year else None,
+                journal=normalize_space(item.get("fulljournalname") or item.get("source") or "") or None,
+                type_tags=type_tags,
+                species=species,
+                feeding=feeding,
             )
+            if cand.ref_id in seen_ref_ids:
+                continue
+            seen_ref_ids.add(cand.ref_id)
+            seen_title_year.add(key)
+            sources.append(cand)
 
-        return query, sources, warnings
+        # Rank: fetch abstracts, score, filter by threshold, sort (score desc, year desc)
+        if sources:
+            ref_ids = [s.ref_id for s in sources]
+            abstracts_map = self.fetch_abstracts(ref_ids)
+            scored: List[Tuple[int, SourceCandidate]] = []
+            for s in sources:
+                abstract = abstracts_map.get(s.ref_id) or ""
+                sc = self._score_source(s.title, abstract, inn_clean, s.species)
+                if sc >= _SCORE_THRESHOLD:
+                    scored.append((sc, s))
+            scored.sort(key=lambda x: (-x[0], -(x[1].year or 0)))
+            sources = [cand for _, cand in scored]
+
+        # Official/regulatory sources (always appended; id_type=URL)
+        sources.extend(_get_official_sources(inn_clean))
+
+        return used_query, sources, warnings
+
+    @staticmethod
+    def _is_noise_title(title: str) -> bool:
+        """Exclude DDI, phenotyping, cocktail/probe, microdose, veterinary (post-filter backup)."""
+        t = (title or "").lower()
+        noise = (
+            "drug-drug interaction",
+            "drug interaction",
+            " ddi ",
+            "phenotyping",
+            "phenotype",
+            "cocktail",
+            "probe drug",
+            "probe drugs",
+            "microdose",
+            "veterinary",
+            " in rats",
+            " in mice",
+            " in dogs",
+            " in pigs",
+            " in horse",
+            "rat ",
+            "mouse ",
+            "canine",
+            "feline",
+            "equine",
+        )
+        return any(n in t for n in noise)
+
+    @staticmethod
+    def _score_source(
+        title: str,
+        abstract: str,
+        inn: str,
+        species: Optional[str],
+    ) -> int:
+        """Score a source: plus for INN/theme/must, minus for anti/other-drug/animal. Returns total."""
+        t = (title or "").lower()
+        a = (abstract or "").lower()
+        inn_l = (inn or "").strip().lower()
+        score = 0
+
+        # +10 INN in title (exact token)
+        if inn_l:
+            token_re = re.compile(r"\b" + re.escape(inn_l) + r"\b", re.I)
+            if token_re.search(t):
+                score += 10
+            # +5 INN in title (partial/variant)
+            elif inn_l in t:
+                score += 5
+
+        # +3 per theme keyword in title, +1 in abstract
+        for kw in _THEME_KEYWORDS:
+            if kw in t:
+                score += 3
+            if kw in a:
+                score += 1
+
+        # +2 if any must-keyword (delayed-release/enteric/dissolution)
+        for kw in _MUST_KEYWORDS:
+            if kw in t or kw in a:
+                score += 2
+                break
+
+        # -10 anti in title
+        for kw in _ANTI_KEYWORDS:
+            if kw in t:
+                score -= 10
+                break
+        # -5 anti only in abstract (if not already -10 from title)
+        if not any(kw in t for kw in _ANTI_KEYWORDS):
+            for kw in _ANTI_KEYWORDS:
+                if kw in a:
+                    score -= 5
+                    break
+
+        # -10 title like "<other drug> ... effect of <inn> ..." (INN as modifier)
+        if inn_l and "pharmacokinetics" in t and re.search(
+            r"effect(s)?\s+of\s+" + re.escape(inn_l), t, re.I
+        ):
+            score -= 10
+
+        # -20 animal study (once)
+        animal_markers = (" in rats", " in mice", " in dogs", "veterinary", " in healthy horses")
+        if species == "animal" or any(m in t for m in animal_markers) or any(m in a for m in animal_markers):
+            score -= 20
+
+        return score
 
     def fetch_abstracts(self, ids: List[str]) -> Dict[str, str]:
-        pubmed_ids = [i for i in ids if not i.startswith("PMCID:")]
-        pmc_ids = [i.replace("PMCID:", "") for i in ids if i.startswith("PMCID:")]
+        # Accept ref_id: PMID:123 or PMCID:123 (or legacy numeric / PMCID:x)
+        pubmed_ids: List[str] = []
+        pmc_ids: List[str] = []
+        for i in ids:
+            if not i:
+                continue
+            s = i.strip()
+            if s.upper().startswith("PMCID:"):
+                pmc_ids.append(s.split(":", 1)[1].strip().lstrip("PMC"))
+            elif s.upper().startswith("PMID:"):
+                pubmed_ids.append(s.split(":", 1)[1].strip())
+            elif s.upper().startswith("URL:"):
+                continue  # official/regulatory URLs: no abstract from NCBI
+            elif s.isdigit():
+                pubmed_ids.append(s)
+            else:
+                pubmed_ids.append(s)
+        # PMC ids from API are numeric; strip PMC prefix if present
+        pmc_ids = [x.lstrip("PMC") for x in pmc_ids]
 
         abstracts: Dict[str, str] = {}
         if pubmed_ids:
-            abstracts.update(self._efetch_abstracts("pubmed", pubmed_ids))
+            raw_pubmed = self._efetch_abstracts("pubmed", pubmed_ids)
+            for pid, text in raw_pubmed.items():
+                abstracts[f"PMID:{pid}"] = text
         if pmc_ids:
             pmc_abstracts = self._efetch_abstracts("pmc", pmc_ids)
             for pmcid, text in pmc_abstracts.items():
-                abstracts[f"PMCID:{pmcid}"] = text
+                # PMC XML may return numeric or PMC-prefixed id
+                n = str(pmcid).lstrip("PMC")
+                abstracts[f"PMCID:{n}"] = text
         return abstracts
 
     def _efetch_abstracts(self, db: str, ids: List[str]) -> Dict[str, str]:
