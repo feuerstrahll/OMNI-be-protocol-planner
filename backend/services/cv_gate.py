@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
 from typing import List, Tuple
 
 from backend.schemas import CIValue, CVInfo, OpenQuestion, PKExtractionResponse, PKValue, VariabilityInput
@@ -243,7 +242,8 @@ def _derive_from_ci(
 
 
 def _fallback_allowed(use_fallback: bool) -> bool:
-    return use_fallback or os.getenv("ALLOW_CVFROMCI_FALLBACK", "").lower() == "true"
+    """Only allow CVfromCI approximation when request explicitly sets use_fallback=True."""
+    return use_fallback
 
 
 def _approx_cv_from_ci(ci_low: float, ci_high: float, n: int, confidence_level: float) -> float | None:

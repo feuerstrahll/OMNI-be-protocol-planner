@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote
 from xml.etree import ElementTree
 
 from backend.schemas import SourceCandidate
@@ -91,6 +92,26 @@ _OFFICIAL_SOURCES_OMEPRAZOLE = (
 )
 
 
+def _parse_ref_id(ref: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Parse ref_id into (id_type, id_value, normalized_ref_id). Returns (None,None,None) if invalid."""
+    s = (ref or "").strip()
+    if not s:
+        return None, None, None
+    u = s.upper()
+    if u.startswith("PMCID:"):
+        raw = s.split(":", 1)[1].strip().lstrip("PMC")
+        return "PMCID", raw, f"PMCID:{raw}" if raw else (None, None, None)
+    if u.startswith("PMID:"):
+        raw = s.split(":", 1)[1].strip()
+        return "PMID", raw, f"PMID:{raw}" if raw else (None, None, None)
+    if u.startswith("URL:") or s.startswith("http://") or s.startswith("https://"):
+        url = s.split(":", 1)[1].strip() if u.startswith("URL:") else s
+        return "URL", url, f"URL:{url}"
+    if s.isdigit():
+        return "PMID", s, f"PMID:{s}"
+    return "PMID", s, f"PMID:{s}"  # legacy: treat as PMID
+
+
 def _get_official_sources(inn: str) -> List[SourceCandidate]:
     """Return 4 official/regulatory sources (id_type=URL). Always included in /search_sources."""
     inn_lower = (inn or "").strip().lower()
@@ -98,7 +119,7 @@ def _get_official_sources(inn: str) -> List[SourceCandidate]:
         items = _OFFICIAL_SOURCES_OMEPRAZOLE
     else:
         # Generic search URLs for other INNs
-        enc = __import__("urllib.parse").quote(inn_lower or "drug")
+        enc = quote(inn_lower or "drug")
         items = (
             (f"FDA label ({inn_lower})", f"https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?event=overview.processSearch&term={enc}"),
             (f"EMA SmPC ({inn_lower})", "https://www.ema.europa.eu/en/medicines/medicines-human-use"),
@@ -173,6 +194,106 @@ class PubMedClient:
             result[uid] = item
         return result
 
+    def resolve_sources(
+        self, ref_ids: List[str], inn: str
+    ) -> Tuple[List[SourceCandidate], List[str]]:
+        """Resolve ref_ids (PMID/PMCID/URL) to SourceCandidates. Used when selected_sources override.
+        Returns (sources, warnings). Does not filter by noise (user chose these explicitly)."""
+        warnings: List[str] = []
+        sources: List[SourceCandidate] = []
+        seen: set = set()
+
+        pubmed_ids: List[str] = []
+        pmc_ids: List[str] = []
+        ref_order: List[Tuple[str, str, str]] = []  # (id_type, id_val, ref_id)
+
+        for ref in ref_ids:
+            id_type, id_val, norm_ref = _parse_ref_id(ref)
+            if not id_type or norm_ref in seen:
+                continue
+            seen.add(norm_ref)
+            if id_type == "PMID":
+                pubmed_ids.append(id_val)
+                ref_order.append(("PMID", id_val, norm_ref))
+            elif id_type == "PMCID":
+                clean = id_val.lstrip("PMC")
+                pmc_ids.append(clean)
+                ref_order.append(("PMCID", clean, norm_ref))
+            elif id_type == "URL":
+                ref_order.append(("URL", id_val, norm_ref))
+
+        pubmed_summary = self._esummary("pubmed", pubmed_ids) if pubmed_ids else {}
+        pmc_summary = self._esummary("pmc", pmc_ids) if pmc_ids else {}
+
+        for ref_type, id_val, norm_ref in ref_order:
+            if ref_type == "PMID":
+                item = pubmed_summary.get(id_val)
+                if not item:
+                    warnings.append(f"PMID:{id_val} not found in NCBI.")
+                    continue
+                title = normalize_space(item.get("title", ""))
+                pubdate = item.get("pubdate", "")
+                year = self._extract_year(pubdate)
+                journal = normalize_space(item.get("fulljournalname") or item.get("source") or "") or None
+                sources.append(
+                    SourceCandidate(
+                        id_type="PMID",
+                        id=id_val,
+                        url=f"https://pubmed.ncbi.nlm.nih.gov/{id_val}/",
+                        title=title or f"PubMed {id_val}",
+                        year=int(year) if year else None,
+                        journal=journal,
+                        type_tags=self._infer_type_tags(title),
+                        species=self._infer_species(title),
+                        feeding=self._infer_feeding(title),
+                    )
+                )
+            elif ref_type == "PMCID":
+                item = pmc_summary.get(id_val) or pmc_summary.get(f"PMC{id_val}")
+                if not item:
+                    warnings.append(f"PMCID:{id_val} not found in NCBI.")
+                    continue
+                title = normalize_space(item.get("title", ""))
+                pubdate = item.get("pubdate", "")
+                year = self._extract_year(pubdate)
+                journal = normalize_space(item.get("fulljournalname") or item.get("source") or "") or None
+                sources.append(
+                    SourceCandidate(
+                        id_type="PMCID",
+                        id=id_val,
+                        url=f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{id_val}/",
+                        title=title or f"PMC {id_val}",
+                        year=int(year) if year else None,
+                        journal=journal,
+                        type_tags=self._infer_type_tags(title),
+                        species=self._infer_species(title),
+                        feeding=self._infer_feeding(title),
+                    )
+                )
+            elif ref_type == "URL":
+                try:
+                    from urllib.parse import urlparse
+                    host = urlparse(id_val).netloc or "official"
+                    title = f"Official source ({host})"
+                except Exception:
+                    title = "Official source (URL)"
+                sources.append(
+                    SourceCandidate(
+                        id_type="URL",
+                        id=id_val,
+                        url=id_val,
+                        title=title,
+                        year=None,
+                        journal=None,
+                    )
+                )
+
+        return sources, warnings
+
+    def get_official_sources(self, inn: str) -> List[SourceCandidate]:
+        """Return official/regulatory URL sources for the given INN."""
+        return _get_official_sources(inn)
+
     def _build_pubmed_query_step_a(self, inn: str) -> str:
         """Step A: high precision — INN in title or as MeSH major topic."""
         inn_esc = inn.strip()
@@ -200,7 +321,9 @@ class PubMedClient:
             f"NOT ({_PMC_ANTI})"
         )
 
-    def search_sources(self, inn: str, retmax: int = 10) -> Tuple[str, List[SourceCandidate], List[str]]:
+    def search_sources(
+        self, inn: str, retmax: int = 10, mode: str = "be"
+    ) -> Tuple[str, List[SourceCandidate], List[str]]:
         warnings: List[str] = []
         sources: List[SourceCandidate] = []
         seen_ref_ids: set = set()
@@ -215,7 +338,7 @@ class PubMedClient:
                 return
             seen_ref_ids.add(candidate.ref_id)
             seen_title_year.add(key)
-            if self._is_noise_title(candidate.title):
+            if self._is_noise_title(candidate.title, allow_ddi=(mode == "ddi")):
                 return
             sources.append(candidate)
 
@@ -282,7 +405,7 @@ class PubMedClient:
             type_tags = self._infer_type_tags(title)
             species = self._infer_species(title)
             feeding = self._infer_feeding(title)
-            if self._is_noise_title(title):
+            if self._is_noise_title(title, allow_ddi=(mode == "ddi")):
                 continue
             key = (title.lower()[:120], int(year) if year else None)
             if key in seen_title_year:
@@ -323,13 +446,11 @@ class PubMedClient:
         return used_query, sources, warnings
 
     @staticmethod
-    def _is_noise_title(title: str) -> bool:
-        """Exclude DDI, phenotyping, cocktail/probe, microdose, veterinary (post-filter backup)."""
+    def _is_noise_title(title: str, *, allow_ddi: bool = False) -> bool:
+        """Exclude DDI, phenotyping, cocktail/probe, microdose, veterinary (post-filter backup).
+        When allow_ddi=True (mode=ddi), drug interaction terms are not treated as noise."""
         t = (title or "").lower()
-        noise = (
-            "drug-drug interaction",
-            "drug interaction",
-            " ddi ",
+        noise = [
             "phenotyping",
             "phenotype",
             "cocktail",
@@ -347,7 +468,9 @@ class PubMedClient:
             "canine",
             "feline",
             "equine",
-        )
+        ]
+        if not allow_ddi:
+            noise.extend(("drug-drug interaction", "drug interaction", " ddi "))
         return any(n in t for n in noise)
 
     @staticmethod

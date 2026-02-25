@@ -216,6 +216,10 @@ class RunPipelineRequest(BaseModel):
     dose: Optional[str] = Field(None, description="Дозировка (e.g. 500 mg)")
     retmax: int = Field(10, ge=1, le=50)
     selected_sources: Optional[List[str]] = None
+    mode: Optional[Literal["be", "ddi"]] = Field(
+        "be",
+        description="be: exclude DDI from search; ddi: allow drug-drug interaction studies.",
+    )
     manual_cv: Optional[float] = None
     cv_confirmed: bool = False
     rsabe_requested: Optional[bool] = Field(None, description="Явный запрос RSABE (иначе — автоопределение по CV)")

@@ -156,6 +156,8 @@ class SynopsisCompleteness(BaseModel):
 class FullReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    run_id: Optional[str] = Field(None, description="Unique run identifier for audit")
+    request_hash: Optional[str] = Field(None, description="Hash of key request fields for correlation")
     inn: str = Field(..., description="English INN (для поиска)")
     inn_ru: Optional[str] = Field(None, description="МНН на русском (для отображения)")
     dosage_form: Optional[str] = None

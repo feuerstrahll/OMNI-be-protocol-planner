@@ -30,6 +30,9 @@ hard_red_codes:
   - unresolved_source_conflict   # RF-3: Conflict without primary selection
   - cv_from_ci_invalid           # RF-4: CVfromCI missing fields or unconfirmed
   - math_contradiction           # RF-5: Negative AUC/Cmax, CV < 0, CI <= 0
+  - fallback_pk                  # Hard gate: PK/CV from fallback — block N_det export
+  - protocol_condition_conflicts_with_evidence
+  - selected_sources_mismatch    # Selected sources do not match report sources
 
 # ----------------------------------------------------------------------------
 # 5.3 & 5.4) Penalties for Plausibility (P) and Consistency (K)

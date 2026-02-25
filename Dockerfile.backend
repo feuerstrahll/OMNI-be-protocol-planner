@@ -1,0 +1,48 @@
+# Backend: FastAPI + R + PowerTOST
+FROM python:3.11.9-slim-bookworm
+
+WORKDIR /app
+
+# Ускоряем и стабилизируем сборку в условиях нестабильной сети
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+      sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list; \
+    fi
+
+# R + зависимости для установки пакетов из CRAN
+RUN apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+    && apt-get install -y --no-install-recommends -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+    r-base \
+    r-cran-jsonlite \
+    libcurl4-openssl-dev \
+    libxml2-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# PowerTOST (N_det и CVfromCI)
+RUN Rscript -e "options(timeout=300); install.packages(c('PowerTOST', 'jsonlite'), repos='https://cran.rstudio.com/')"
+
+ENV RSCRIPT_PATH=/usr/bin/Rscript
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DEFAULT_TIMEOUT=120
+ENV PIP_RETRIES=10
+
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir --retries ${PIP_RETRIES} --default-timeout ${PIP_DEFAULT_TIMEOUT} -r requirements.txt
+
+COPY backend ./backend
+COPY r ./r
+COPY docs ./docs
+
+RUN mkdir -p /app/output /app/backend/.cache
+
+ENV CACHE_DIR=/app/backend/.cache
+
+EXPOSE 8000
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

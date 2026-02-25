@@ -1,0 +1,51 @@
+# Git and IDE
+.git
+.gitignore
+.cursor
+.vscode
+*.swp
+*.swo
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv
+.venv
+env
+.env
+.env.*
+!.env.example
+
+# Cache and local data
+backend/.cache
+.cache
+*.db
+*.db-shm
+*.db-wal
+
+# Output and temp
+output
+*.docx
+*.log
+*.tmp
+
+# Docs and extras (optional: remove if backend needs them at runtime)
+# We keep docs/ in backend image for DATA_QUALITY_CRITERIA etc.
+BIOLOGISTs_files
+examples_synopsis
+*.pdf
+
+# Tests (not needed in production image)
+backend/tests
+tests
+pytest.ini
+.pytest_cache
+coverage.xml
+htmlcov
+
+# Scripts and one-off
+generate_synopsis_four_scenarios.py
+_qa_smoke.py
