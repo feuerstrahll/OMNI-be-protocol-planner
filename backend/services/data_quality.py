@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -24,21 +24,48 @@ def compute_data_quality(
     cv_info: CVInfo,
     validation_issues: List[ValidationIssue],
     use_mock_extractor: bool = False,
+    use_fallback: bool = False,
     mock_path: str = "docs/mock_extractor_output.json",
     reg_rules_path: str = "backend/rules/reg_rules.yaml",
     criteria_path: str = "docs/DATA_QUALITY_CRITERIA.md",
+    *,
+    pk_warnings: Optional[List[str]] = None,
+    protocol_condition: Optional[str] = None,
+    selected_sources: Optional[List[str]] = None,
+    calc_notes: Optional[List[str]] = None,
 ) -> DataQuality:
     reasons: List[str] = []
     criteria = _load_criteria(criteria_path)
+    hard_gates: List[str] = []
 
     eval_pk, eval_ci, mock_used = _maybe_load_mock(
         pk_values,
         ci_values,
         use_mock_extractor,
+        use_fallback,
         mock_path,
     )
     if mock_used:
         reasons.append("Using mock extractor output for DQI.")
+
+    # Hard gate: fallback_pk in pk_warnings (incl. when mock used for DQI)
+    all_warnings = list(pk_warnings or []) + (["fallback_pk"] if mock_used else [])
+    if "fallback_pk" in all_warnings:
+        hard_gates.append("fallback_pk")
+        reasons.insert(0, "Hard gate: PK/CV from fallback — export of N_det blocked.")
+
+    # Hard gate: protocol_condition conflicts with evidence (fed/fasted mismatch)
+    if protocol_condition and protocol_condition in ("fed", "fasted") and "condition_tagging_missing" in (calc_notes or []):
+        hard_gates.append("protocol_condition_conflicts_with_evidence")
+        reasons.insert(0, "Hard gate: Protocol condition (fed/fasted) conflicts with untagged evidence — resolve before final export.")
+
+    # Hard gate: selected_sources set but none match actual sources used
+    if selected_sources:
+        sources_ref_ids = {getattr(s, "ref_id", "") for s in sources if getattr(s, "ref_id", None)}
+        overlap = set(selected_sources) & sources_ref_ids
+        if not overlap and len(selected_sources) > 0:
+            hard_gates.append("selected_sources_mismatch")
+            reasons.insert(0, "Hard gate: Selected sources do not match any source in the report — verify sources.")
 
     completeness, completeness_reasons = _compute_completeness(
         eval_pk,
@@ -49,7 +76,7 @@ def compute_data_quality(
     )
     reasons.extend(completeness_reasons)
 
-    traceability = _compute_traceability(eval_pk, eval_ci, reasons)
+    traceability = _compute_traceability(eval_pk, eval_ci, reasons, cv_info)
     plausibility = _compute_plausibility(validation_issues, reasons)
     consistency = _compute_consistency(eval_pk, reasons)
     source_quality = _compute_source_quality(sources, reasons)
@@ -124,6 +151,24 @@ def compute_data_quality(
         allow_n_det = False
         prefer_n_risk = True
 
+    # Apply hard gates (override level and block allow_n_det)
+    if hard_gates:
+        if "fallback_pk" in hard_gates:
+            if level == "green":
+                level = "yellow"
+                score = min(score, 79)
+            allow_n_det = False
+        if "protocol_condition_conflicts_with_evidence" in hard_gates:
+            if level == "green":
+                level = "yellow"
+                score = min(score, 79)
+            allow_n_det = False
+        if "selected_sources_mismatch" in hard_gates:
+            level = "red"
+            score = 0
+            allow_n_det = False
+            prefer_n_risk = True
+
     return DataQuality(
         score=score,
         level=level,
@@ -144,9 +189,11 @@ def _maybe_load_mock(
     pk_values: List[PKValue],
     ci_values: List[CIValue],
     use_mock_extractor: bool,
+    use_fallback: bool,
     mock_path: str,
 ) -> Tuple[List[PKValue], List[CIValue], bool]:
-    if use_mock_extractor or _needs_mock(pk_values, ci_values):
+    # When use_fallback=False, never auto-inject mock; only use mock when explicitly requested.
+    if use_mock_extractor or (use_fallback and _needs_mock(pk_values, ci_values)):
         try:
             with open(mock_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -211,19 +258,49 @@ def _compute_completeness(
     return completeness, reasons
 
 
+def _is_traceable_source(evidence_list: list) -> bool:
+    """Evidence is traceable if it has PMID/PMCID/URL; manual://, assumption, fallback:// = not traceable."""
+    if not evidence_list:
+        return False
+    for ev in evidence_list:
+        if ev is None:
+            continue
+        src = (
+            (ev.get("source") if isinstance(ev, dict) else getattr(ev, "source", None))
+            or (ev.get("source_id") if isinstance(ev, dict) else getattr(ev, "source_id", None))
+            or (ev.get("pmid_or_url") if isinstance(ev, dict) else getattr(ev, "pmid_or_url", None))
+            or ""
+        )
+        src = str(src).lower()
+        if src.startswith("pmid:") or src.startswith("pmcid:") or (src.startswith("http") and "fallback" not in src):
+            return True
+        if (ev.get("pmid") if isinstance(ev, dict) else getattr(ev, "pmid", None)):
+            return True
+        if (ev.get("url") if isinstance(ev, dict) else getattr(ev, "url", None)):
+            return True
+    return False
+
+
 def _compute_traceability(
     pk_values: List[PKValue],
     ci_values: List[CIValue],
     reasons: List[str],
+    cv_info: Optional[CVInfo] = None,
 ) -> float:
-    numeric_items = [pk for pk in pk_values if pk.value is not None] + ci_values
-    if not numeric_items:
+    numeric_items = [pk for pk in pk_values if pk.value is not None] + list(ci_values)
+    items_to_score: list = list(numeric_items)
+    if cv_info and cv_info.value is not None:
+        items_to_score.append(cv_info)
+    if not items_to_score:
         reasons.append("No numeric values for traceability scoring.")
         return 0.0
-    with_evidence = sum(1 for item in numeric_items if item.evidence)
-    traceability = with_evidence / len(numeric_items)
+    with_traceable = sum(
+        1 for item in items_to_score
+        if _is_traceable_source(getattr(item, "evidence", None) or [])
+    )
+    traceability = with_traceable / len(items_to_score)
     if traceability < 1.0:
-        reasons.append("Some numeric values lack evidence excerpts.")
+        reasons.append("Some numeric values lack traceable evidence (PMID/URL); assumptions reduce DQI.")
     return traceability
 
 

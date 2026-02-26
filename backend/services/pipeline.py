@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
 from typing import List, Optional, Tuple
 
 from backend.schemas import (
@@ -44,18 +47,41 @@ def run_pipeline(
     logger=None,
 ) -> Tuple[FullReport, List[str]]:
     logger = logger or configure_logging()
+    run_id = str(uuid.uuid4())
+    request_hash = _request_hash(req)
+    logger.info("run_pipeline_started", run_id=run_id, request_hash=request_hash, inn=req.inn, use_fallback=req.use_fallback)
 
     # 1) Sources
     query = ""
     sources: list = []
     warnings: list[str] = []
-    try:
-        query, sources, warnings = pubmed_client.search_sources(req.inn, req.retmax)
-    except Exception as exc:
-        logger.error("search_sources_failed", error=str(exc))
-        warnings.append("NCBI E-utilities request failed.")
+    selected_sources: list = []
 
-    selected_sources = req.selected_sources or [s.ref_id for s in sources]
+    if req.selected_sources:
+        # True override: skip search_sources when user provides exact PMCID/PMID
+        try:
+            resolved, res_warns = pubmed_client.resolve_sources(req.selected_sources, req.inn)
+            sources = list(resolved)
+            warnings.extend(res_warns)
+            selected_sources = req.selected_sources
+            # Append official sources (reference-only URLs)
+            sources.extend(pubmed_client.get_official_sources(req.inn))
+        except Exception as exc:
+            logger.error("resolve_sources_failed", error=str(exc))
+            warnings.append("Failed to resolve selected sources.")
+            selected_sources = req.selected_sources
+    else:
+        try:
+            mode = (req.mode or "be") if hasattr(req, "mode") else "be"
+            query, sources, warnings = pubmed_client.search_sources(req.inn, req.retmax, mode=mode)
+        except Exception as exc:
+            logger.error("search_sources_failed", error=str(exc))
+            warnings.append("NCBI E-utilities request failed.")
+        selected_sources = [s.ref_id for s in sources]
+
+    # D) Clarify URL sources: official URLs are reference-only (not fetched for PK extraction)
+    if any(getattr(s, "id_type", None) == "URL" for s in sources):
+        warnings.append("Official URLs are reference-only (not fetched for PK extraction).")
 
     # 2) PK extraction
     pk_values: list = []
@@ -139,6 +165,11 @@ def run_pipeline(
         cv_info,
         validation_issues,
         use_mock_extractor=req.use_mock_extractor,
+        use_fallback=req.use_fallback,
+        pk_warnings=pk_json.warnings if pk_json else None,
+        protocol_condition=req.protocol_condition,
+        selected_sources=req.selected_sources,
+        calc_notes=calc_notes,
     )
 
     # 5) Design — учёт preferred_design и rsabe_requested
@@ -387,8 +418,11 @@ def run_pipeline(
             if not has_auc:
                 blockers.append("missing_primary_pk_AUC")
 
+    logger.info("run_pipeline_completed", run_id=run_id, request_hash=request_hash)
     report = FullReport(
         inn=req.inn,
+        run_id=run_id,
+        request_hash=request_hash,
         inn_ru=getattr(req, "inn_ru", None),
         dosage_form=req.dosage_form,
         dose=req.dose,
@@ -424,6 +458,20 @@ def run_pipeline(
         synopsis_completeness=SynopsisCompleteness(**synopsis_completeness),
     )
     return report, blockers
+
+
+def _request_hash(req: RunPipelineRequest) -> str:
+    """Stable hash of key request fields for audit/correlation."""
+    key = {
+        "inn": req.inn,
+        "use_fallback": req.use_fallback,
+        "use_mock_extractor": req.use_mock_extractor,
+        "manual_cv": req.manual_cv,
+        "cv_confirmed": req.cv_confirmed,
+        "selected_sources": sorted(req.selected_sources or [])[:20],
+        "retmax": req.retmax,
+    }
+    return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def filter_pk_ci_for_calculation(
